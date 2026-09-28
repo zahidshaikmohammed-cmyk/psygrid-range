@@ -5,7 +5,12 @@
     python diagnose_endpoint.py CIPLA --save-fixture   (writes tests/fixtures/captured/CIPLA.json)
 
 Base URL: config/engine.json -> data_source.base_url, or the PSYGRID_BASE_URL
-environment variable.  Exit code 0 when the data is usable, 1 otherwise.
+environment variable.
+
+Verdicts: OK (valid, current candles), MARKET_CLOSED (healthy response, no
+live session), STALE_DATA (valid candles, too old while the market is open),
+BAD_DATA (network failure, malformed/unexpected payload, invalid candles).
+Exit code 0 for OK and MARKET_CLOSED, 1 otherwise.
 """
 import argparse
 import json
@@ -34,7 +39,7 @@ def main() -> int:
     fixture = Path(__file__).parent / "tests" / "fixtures" / "captured" / f"{sym}.json" if args.save_fixture else None
     d = run_diagnostic(sym, cfg, save_fixture=fixture)
     print(json.dumps(d, indent=2, default=str) if args.json else render_diagnostic(d))
-    return 0 if d["verdict"].startswith(("GOOD", "DEGRADED")) else 1
+    return 0 if d["verdict"] in ("OK", "MARKET_CLOSED") else 1
 
 
 if __name__ == "__main__":

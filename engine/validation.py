@@ -265,3 +265,68 @@ def assess_freshness(candles: pd.DataFrame, now: datetime, cfg: EngineConfig) ->
             f"last candle closed {age:.1f} min ago (limit {limit:.0f})",
         )
     return Freshness(now_ts.isoformat(), True, last.isoformat(), round(age, 1), False, "fresh")
+
+
+# --------------------------------------------------------------------------- #
+# Data-state classification of one live endpoint response
+# --------------------------------------------------------------------------- #
+DATA_OK, STALE_DATA, MARKET_CLOSED, BAD_DATA = "OK", "STALE_DATA", "MARKET_CLOSED", "BAD_DATA"
+NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+@dataclass
+class DataState:
+    state: str            # OK / STALE_DATA / MARKET_CLOSED / BAD_DATA
+    reason: str
+    data_quality: str     # GOOD / DEGRADED / BAD, or NOT_APPLICABLE when no candles were served
+    notes: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def classify_data_state(
+    *,
+    endpoint_state: str | None,
+    has_candles: bool,
+    clean: pd.DataFrame,
+    report: ValidationReport | None,
+    now: datetime,
+    cfg: EngineConfig,
+) -> DataState:
+    """Classify a *parsed* endpoint response (envelope errors never reach
+    here: they are BAD_DATA at parse time).
+
+    MARKET_CLOSED  healthy envelope, no candles served, and either the
+                   endpoint says it is closed or the exchange session is
+                   closed by the clock; or valid candles outside session hours.
+    BAD_DATA       candles failed validation, or no candles while the endpoint
+                   claims to be live during session hours.
+    STALE_DATA     valid candles, market open, last candle older than the
+                   freshness threshold.
+    OK             valid, current candles.
+    Nothing is inferred or synthesised from a response without candles.
+    """
+    open_ = is_market_open(now, cfg)
+    notes: list[str] = []
+    if not has_candles:
+        if endpoint_state == "CLOSED":
+            if open_:
+                notes.append("endpoint reports CLOSED during regular session hours (exchange holiday or feed pause?)")
+            return DataState(MARKET_CLOSED, "endpoint reports the market closed; no candles served", NOT_APPLICABLE, notes)
+        if not open_:
+            return DataState(MARKET_CLOSED, "no candles served outside regular session hours", NOT_APPLICABLE, notes)
+        return DataState(BAD_DATA, "endpoint reports a healthy/live status but served no candles during session hours",
+                         NOT_APPLICABLE, notes)
+    quality = report.quality if report is not None else BAD
+    if report is None or quality == BAD or clean.empty:
+        why = "; ".join(report.issues) if report is not None and report.issues else "no valid candles"
+        return DataState(BAD_DATA, f"candles failed validation: {why}", quality, notes)
+    if endpoint_state == "CLOSED":
+        notes.append("endpoint status is CLOSED but candles were served")
+    fresh = assess_freshness(clean, now, cfg)
+    if not fresh.market_open:
+        return DataState(MARKET_CLOSED, "market closed; last session's candles are valid", quality, notes)
+    if fresh.is_stale:
+        return DataState(STALE_DATA, f"stale: {fresh.reason}", quality, notes)
+    return DataState(DATA_OK, "valid, current candles", quality, notes)

@@ -23,7 +23,7 @@ from engine.cli import _utf8_stdout
 from engine.config import load_config
 from engine.ingestion import DataSourceError, get_snapshot
 from engine.storage import LIVE, HistoryStore
-from engine.validation import assess_freshness, clean_candles
+from engine.validation import classify_data_state, clean_candles
 
 
 def main() -> int:
@@ -53,31 +53,36 @@ def main() -> int:
         try:
             snap = get_snapshot(sym, cfg, now=now, use_cache=False)
         except DataSourceError as exc:
-            return sym, None, None, str(exc)
+            return sym, None, None, f"{exc.__class__.__name__}: {exc}"
         clean, rep = clean_candles(snap.candles, cfg, sym, n_malformed=snap.n_malformed, now=now,
                                    schema_issues=snap.schema_issues, single_session=True)
         store.save(sym, clean, source=LIVE)
-        return sym, rep, assess_freshness(clean, now, cfg), None
+        st = classify_data_state(endpoint_state=snap.endpoint_state, has_candles=snap.has_candles, clean=clean,
+                                 report=rep if snap.has_candles else None, now=now, cfg=cfg)
+        return sym, rep if snap.has_candles else None, st, None
 
-    ok = failed = stale = 0
+    counts = {"OK": 0, "MARKET_CLOSED": 0, "STALE_DATA": 0, "BAD_DATA": 0, "FAILED": 0}
     with ThreadPoolExecutor(max_workers=int(cfg["market_context"]["live_fetch_workers"])) as ex:
-        for sym, rep, fresh, err in ex.map(one, symbols):
+        for sym, rep, st, err in ex.map(one, symbols):
             if err:
-                failed += 1
-                print(f"  {sym:12s} FAILED   {err}")
+                counts["FAILED"] += 1
+                print(f"  {sym:12s} FAILED         {err}")
                 continue
-            ok += 1
-            flag = ""
-            if fresh.market_open and fresh.is_stale:
-                stale += 1
-                flag = "  STALE"
-            print(f"  {sym:12s} {rep.quality:8s} {rep.n_valid:4d} candles  last {rep.last_candle or '-'}{flag}"
+            counts[st.state] += 1
+            if rep is None:
+                print(f"  {sym:12s} {st.state:14s} {st.reason}")
+                continue
+            print(f"  {sym:12s} {st.state:14s} {rep.quality:8s} {rep.n_valid:4d} candles  last {rep.last_candle or '-'}"
                   + (f"  [{'; '.join(rep.issues)}]" if rep.issues else ""))
+    print("summary: " + ", ".join(f"{k} {v}" for k, v in counts.items() if v))
+    if counts["MARKET_CLOSED"] and not counts["OK"] and not counts["STALE_DATA"]:
+        print("the endpoint served no current-session candles (market closed) - nothing new was stored; "
+              "run this again after/during the next session")
     sessions = sorted({d for s in cfg.universe.constituents for d in store.sessions(s)})
-    print(f"stored {ok}/{len(symbols)} symbols ({failed} failed, {stale} stale) in {store.root}")
+    print(f"store: {store.root}")
     print(f"history now spans {len(sessions)} sessions"
           + (f" ({sessions[0]} .. {sessions[-1]})" if sessions else "") + "; check with: python train.py --status")
-    return 0 if ok else 1
+    return 0 if counts["FAILED"] + counts["BAD_DATA"] < len(symbols) else 1
 
 
 if __name__ == "__main__":

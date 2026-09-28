@@ -36,7 +36,15 @@ import requests
 from .config import EngineConfig
 
 CANDLE_FIELDS = ("timestamp", "open", "high", "low", "close", "volume")
-OK_STATUSES = ("ok", "success", "live", "200", "true")
+OK_STATUSES = ("ok", "success", "live", "open", "200", "true")
+CLOSED_STATUSES = ("closed", "market_closed", "holiday")
+
+# Endpoint states derived from the envelope's ``status`` field
+ENDPOINT_OK, ENDPOINT_CLOSED = "OK", "CLOSED"
+
+
+def normalize_status(status: Any) -> str:
+    return str(status).strip().lower().replace("-", "_").replace(" ", "_")
 
 
 class DataSourceError(RuntimeError):
@@ -73,7 +81,9 @@ class Snapshot:
     security_id: str | None = None
     schema_version: str | None = None
     service: str | None = None
-    endpoint_status: str | None = None
+    endpoint_status: str | None = None     # raw value of the ``status`` field
+    endpoint_state: str | None = None      # OK / CLOSED (anything else raises)
+    has_candles: bool = False              # candles_1m present and non-empty
     n_records: int = 0
     n_malformed: int = 0
     malformed_examples: list[str] = field(default_factory=list)
@@ -225,35 +235,64 @@ def _parse_candles(records: Any, tz) -> tuple[pd.DataFrame, int, list[str], str]
 
 
 def parse_payload(payload: Any, symbol: str, cfg: EngineConfig, fetched_at: datetime) -> Snapshot:
-    """Validate the envelope and parse a PSYGRID stock document."""
+    """Validate the envelope and parse a PSYGRID stock document.
+
+    Two valid shapes exist:
+
+    * a **session document** with ``candles_1m`` (the documented fields);
+    * a **closed-market document**: HTTP 200 with a healthy ``status`` and the
+      requested ``symbol`` but no candles (``candles_1m`` absent or empty).
+      It is returned with empty candles; nothing is inferred from it.
+
+    Everything else - non-object JSON, missing ``status``/``symbol``, an
+    error/unrecognised status, a symbol mismatch, a non-list ``candles_1m`` -
+    raises :class:`MalformedPayloadError` (-> BAD_DATA).
+    """
     ds = cfg["data_source"]
     if not isinstance(payload, dict):
         raise MalformedPayloadError("payload is not a JSON object")
-    missing_req = [f for f in ds.get("required_fields", ["candles_1m"]) if f not in payload]
+    missing_req = [f for f in ds.get("required_fields", ["status", "symbol"]) if f not in payload]
     if missing_req:
         raise MalformedPayloadError(f"payload is missing required field(s): {', '.join(missing_req)}")
-    issues: list[str] = []
-    missing = [f for f in ds.get("expected_fields", []) if f not in payload]
-    if missing:
-        issues.append(f"missing documented field(s): {', '.join(missing)}")
     status = payload.get("status")
-    if status is not None and str(status).strip().lower() not in OK_STATUSES:
-        raise MalformedPayloadError(f"endpoint status is {status!r}")
+    norm = normalize_status(status)
+    ok_set = {normalize_status(x) for x in ds.get("ok_statuses", OK_STATUSES)}
+    closed_set = {normalize_status(x) for x in ds.get("closed_statuses", CLOSED_STATUSES)}
+    if norm in ok_set:
+        state = ENDPOINT_OK
+    elif norm in closed_set:
+        state = ENDPOINT_CLOSED
+    else:
+        raise MalformedPayloadError(
+            f"endpoint status is {str(status)[:40]!r}: not a recognised healthy or closed-market status "
+            "(if it means the market is closed, add it to data_source.closed_statuses in config/engine.json)")
     psym = payload.get("symbol")
-    if psym is not None and str(psym).strip().upper() != symbol.upper():
+    if psym is None or str(psym).strip().upper() != symbol.upper():
         raise MalformedPayloadError(f"payload symbol {psym!r} does not match requested {symbol!r}")
+    raw_candles = payload.get("candles_1m")
+    if raw_candles is not None and not isinstance(raw_candles, list):
+        raise MalformedPayloadError("candles_1m is not a list")
+    has_candles = bool(raw_candles)
+    issues: list[str] = []
     service = payload.get("service")
+    if "service" not in payload:
+        issues.append("missing documented field(s): service")
     exp_service = ds.get("expected_service")
     if exp_service and service != exp_service:
         issues.append(f"service is {service!r}, expected {exp_service!r}")
-    if "schema_version" in payload and payload.get("schema_version") in (None, ""):
-        issues.append("schema_version is empty")
+    if has_candles:
+        # the full documented schema is only expected when candles are served
+        missing = [f for f in ds.get("expected_fields", []) if f not in payload and f != "service"]
+        if missing:
+            issues.append(f"missing documented field(s): {', '.join(missing)}")
+        if "schema_version" in payload and payload.get("schema_version") in (None, ""):
+            issues.append("schema_version is empty")
     for k in ("previous_close", "today_open"):
         if payload.get(k) is not None and _to_float(payload.get(k)) is None:
             issues.append(f"{k} is not a finite number: {str(payload.get(k))[:40]!r}")
         elif _to_float(payload.get(k)) is not None and _to_float(payload.get(k)) <= 0:
             issues.append(f"{k} is not positive")
-    candles, bad, examples, fmt = _parse_candles(payload["candles_1m"], cfg.tz)
+    candles, bad, examples, fmt = _parse_candles(raw_candles if raw_candles is not None else [], cfg.tz)
     return Snapshot(
         symbol=symbol.upper(),
         candles=candles,
@@ -264,11 +303,13 @@ def parse_payload(payload: Any, symbol: str, cfg: EngineConfig, fetched_at: date
         schema_version=None if payload.get("schema_version") is None else str(payload.get("schema_version"))[:32],
         service=None if service is None else str(service)[:64],
         endpoint_status=None if status is None else str(status)[:32],
-        n_records=len(payload["candles_1m"]) if isinstance(payload["candles_1m"], list) else 0,
+        endpoint_state=state,
+        has_candles=has_candles,
+        n_records=len(raw_candles) if isinstance(raw_candles, list) else 0,
         n_malformed=bad,
         malformed_examples=examples,
         schema_issues=issues,
-        timestamp_format=fmt,
+        timestamp_format=fmt if has_candles else "n/a (no candles)",
     )
 
 

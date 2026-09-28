@@ -37,7 +37,7 @@ from .pipeline import FittedPipeline
 from .regime import describe
 from .storage import LIVE, HistoryStore
 from .training import calibration_file, model_dir
-from .validation import assess_freshness, clean_candles
+from .validation import BAD_DATA, MARKET_CLOSED, STALE_DATA, assess_freshness, classify_data_state, clean_candles
 
 STANDARD, REMAINING = "STANDARD_60M", "REMAINING_SESSION"
 PROXY_DESCRIPTION = ("equal-weight average of NIFTY-50 constituent 1-minute returns built by this engine; "
@@ -69,6 +69,7 @@ class Forecast:
     evidence: dict = field(default_factory=dict)
     model_evidence: dict = field(default_factory=dict)
     data_quality: str | None = None
+    data_state: str | None = None         # OK / STALE_DATA / MARKET_CLOSED / BAD_DATA (live endpoint response)
     data_issues: list[str] = field(default_factory=list)
     freshness: dict = field(default_factory=dict)
     market_context: dict = field(default_factory=dict)
@@ -126,8 +127,11 @@ class RangeEngine:
         # individually-validated genuine candles are kept even when the batch is
         # graded BAD (e.g. too many gaps); the grade still blocks forecasting.
         self.store.save(symbol, clean, source=LIVE)
+        state = classify_data_state(endpoint_state=snap.endpoint_state, has_candles=snap.has_candles, clean=clean,
+                                    report=rep if snap.has_candles else None, now=now, cfg=self.cfg)
         meta = {"report": rep, "previous_close": snap.previous_close, "fetched_at": snap.fetched_at.isoformat(),
-                "from_cache": snap.from_cache, "schema_version": snap.schema_version, "raw_path": snap.raw_path}
+                "from_cache": snap.from_cache, "schema_version": snap.schema_version, "raw_path": snap.raw_path,
+                "state": state, "endpoint_status": snap.endpoint_status}
         return clean, meta
 
     def _context(self, symbol: str, now: datetime, as_of: pd.Timestamp | None, live: bool,
@@ -256,25 +260,31 @@ class RangeEngine:
                 fc.freshness = {"now": pd.Timestamp(now).isoformat()}
                 return fc
             rep = live_meta["report"]
+            dstate = live_meta["state"]
             prev_close = live_meta["previous_close"]
-            fc.data_quality, fc.data_issues = rep.quality, rep.issues
+            fc.data_state = dstate.state
+            fc.data_quality = dstate.data_quality
+            fc.data_issues = (rep.issues if today is not None and not today.empty else []) + dstate.notes
             fresh = assess_freshness(today, now, cfg)
             fc.freshness = {**fresh.to_dict(), "fetched_at": live_meta["fetched_at"],
-                            "from_cache": live_meta["from_cache"], "raw_archive": live_meta["raw_path"]}
+                            "from_cache": live_meta["from_cache"], "raw_archive": live_meta["raw_path"],
+                            "endpoint_status": live_meta["endpoint_status"]}
+            if dstate.state == BAD_DATA:
+                fc.forecast_status = C.BAD_DATA
+                fc.status_reasons = [dstate.reason]
+                return fc
             if today.empty:
-                fc.status_reasons = ["endpoint returned no valid candles"]
-                fc.forecast_status = C.BAD_DATA if fresh.market_open else C.MARKET_CLOSED
+                # healthy closed-market response: no candles, nothing inferred
+                fc.forecast_status = C.MARKET_CLOSED
+                fc.status_reasons = [dstate.reason + " (no live next-60-minute window; "
+                                     "use --as-of to replay stored history)"]
                 return fc
             today_candles[symbol] = today
             day0 = today.index[0].normalize()
             past = load_clean_history(self.store, cfg, symbol, last_n_sessions=cfg["warmup"]["history_sessions_for_features"] + 1)
             hist = pd.concat([past[past.index.normalize() < day0], today])
             as_of_cut = None
-            if rep.quality == "BAD":
-                fc.forecast_status = C.BAD_DATA
-                fc.status_reasons = ["live candles failed validation: " + "; ".join(rep.issues)]
-                return fc
-            if not fresh.market_open:
+            if dstate.state == MARKET_CLOSED or not fresh.market_open:
                 fc.mode = "ANALYSIS"
                 if not allow_closed:
                     self._describe_state(fc, hist, symbol, None, prev_close)
@@ -282,9 +292,9 @@ class RangeEngine:
                     fc.status_reasons = ["market is closed: there is no live next-60-minute window "
                                          "(use --analysis to evaluate the last stored state)"]
                     return fc
-            elif fresh.is_stale:
-                fc.forecast_status = C.BAD_DATA
-                fc.status_reasons = [f"stale data: {fresh.reason}"]
+            elif dstate.state == STALE_DATA:
+                fc.forecast_status = C.BAD_DATA  # stale data never produces a forecast
+                fc.status_reasons = [f"STALE_DATA - {dstate.reason}"]
                 return fc
 
         fc.history_sessions = int(hist.index.normalize().nunique())

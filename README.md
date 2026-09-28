@@ -59,6 +59,24 @@ This makes a real HTTP request from your machine and reports:
 If the request fails, it reports `BAD_DATA` and shows `n/a` for every value
 it could not measure. Nothing is filled in.
 
+Every live response is classified into one **data state**:
+
+| State | Meaning |
+|---|---|
+| `OK` | Valid, current candles. |
+| `MARKET_CLOSED` | HTTP 200 with a healthy envelope but no current-session candles (for example the minimal `service`/`status`/`symbol` document served outside market hours), or valid candles after the close. Nothing is inferred from it and nothing is stored. Data quality is `NOT_APPLICABLE` when no candles were served. |
+| `STALE_DATA` | Valid candles, but the latest is older than the freshness limit while the market is open. Forecasts are refused (`BAD_DATA` status, `data_state` = `STALE_DATA`). |
+| `BAD_DATA` | Network failure, invalid JSON, missing `status`/`symbol`, a symbol mismatch, an error or unrecognised `status`, `candles_1m` that is not a list, candles failing validation, or no candles while the endpoint claims to be live during session hours. |
+
+Recognised status values are listed in `config\engine.json` under
+`data_source.ok_statuses` and `data_source.closed_statuses`. If the endpoint
+uses another value to mean "closed", the diagnostic prints it (`Raw Status
+Field`) and explains how to add it.
+
+A closed-market response verifies the **connection** only. The candle schema
+is reported as `NOT VALIDATED` until a response with candles has been
+parsed; run the diagnostic again during market hours.
+
 A different server can be used without editing files:
 
 ```powershell

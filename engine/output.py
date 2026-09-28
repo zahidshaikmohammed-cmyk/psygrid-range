@@ -118,6 +118,8 @@ def render_text(fc: Forecast, *, currency: str | None = None, verbose: bool = Fa
             s += f"; {mc['stocks_in_proxy_at_forecast_minute']} in proxy at forecast minute"
         L.append(_kv("Market context", s))
     L.append(_kv("Data quality", fc.data_quality or "n/a"))
+    if fc.data_state:
+        L.append(_kv("Data state", fc.data_state))
     if me.get("data_provenance"):
         L.append(_kv("Training data", ", ".join(f"{k} ({v} sessions)" for k, v in me["data_provenance"].items())))
     L.append(_kv("Model version", (fc.model_version or "n/a")

@@ -14,7 +14,8 @@ def test_diagnostic_success(cfg):
     d = run_diagnostic("cipla", cfg, http=FakeHTTP({"CIPLA": DOC}), now=ist("2026-09-28 09:46:10").to_pydatetime())
     assert d["http_status"] == 200 and d["candles"] == 30 and d["data_quality"] == "GOOD"
     assert d["first_candle"].startswith("2026-09-28T09:15") and d["last_candle"].startswith("2026-09-28T09:44")
-    assert d["latest_candle_age_minutes"] == 1.2 and d["verdict"] == "GOOD"
+    assert d["latest_candle_age_minutes"] == 1.2 and d["verdict"] == "OK"
+    assert d["connection"].startswith("VERIFIED") and d["candle_schema"].startswith("VALIDATED")
     assert d["missing_minutes"] == 0 and d["duplicates_identical"] == 0
     assert d["timestamp_format"] == "iso8601_with_offset" and d["raw_saved"]
     text = render_diagnostic(d)
@@ -24,15 +25,15 @@ def test_diagnostic_success(cfg):
         assert label in text
 
 
-def test_diagnostic_stale_is_bad_data(cfg):
+def test_diagnostic_stale_data(cfg):
     d = run_diagnostic("CIPLA", cfg, http=FakeHTTP({"CIPLA": DOC}), now=ist("2026-09-28 11:00").to_pydatetime())
-    assert d["verdict"] == "BAD_DATA (stale)"
+    assert d["verdict"] == "STALE_DATA" and d["data_quality"] == "GOOD"
 
 
 def test_diagnostic_failure_fabricates_nothing(cfg):
     cfg.raw["data_source"].update(retries=0)
     d = run_diagnostic("CIPLA", cfg, http=FakeHTTP(exc=requests.ConnectTimeout()))
-    assert d["verdict"] == "BAD_DATA" and d["errors"]
+    assert d["verdict"] == "BAD_DATA" and d["errors"] and d["connection"] == "FAILED"
     for k in ("http_status", "candles", "latest_close", "schema_version", "data_quality"):
         assert k not in d
     assert "n/a" in render_diagnostic(d)

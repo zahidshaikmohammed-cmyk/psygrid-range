@@ -16,8 +16,7 @@
     "expected_service": null,
     "required_fields": [
       "status",
-      "symbol",
-      "candles_1m"
+      "symbol"
     ],
     "expected_fields": [
       "service",
@@ -28,6 +27,29 @@
       "previous_close",
       "today_open",
       "candles_1m"
+    ],
+    "ok_statuses": [
+      "ok",
+      "success",
+      "live",
+      "open",
+      "200",
+      "true"
+    ],
+    "closed_statuses": [
+      "closed",
+      "market_closed",
+      "marketclosed",
+      "market_close",
+      "close",
+      "holiday",
+      "no_session",
+      "off_hours",
+      "after_hours",
+      "pre_open",
+      "preopen",
+      "pre_market",
+      "premarket"
     ]
   },
   "session": {

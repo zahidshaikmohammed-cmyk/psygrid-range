@@ -62,10 +62,10 @@ def test_parse_payload_envelope(cfg):
         parse_payload({**good, "status": "error"}, "CIPLA", cfg, now)
     with pytest.raises(MalformedPayloadError):
         parse_payload({**good, "symbol": "TCS"}, "CIPLA", cfg, now)
-    bad = dict(good)
-    del bad["candles_1m"]
-    with pytest.raises(MalformedPayloadError):
-        parse_payload(bad, "CIPLA", cfg, now)
+    no_candles = dict(good)
+    del no_candles["candles_1m"]  # a valid closed-market shape, not an error
+    snap = parse_payload(no_candles, "CIPLA", cfg, now)
+    assert not snap.has_candles and snap.candles.empty
     with pytest.raises(MalformedPayloadError):
         parse_payload({**good, "candles_1m": "nope"}, "CIPLA", cfg, now)
 
@@ -152,7 +152,7 @@ def test_schema_issues_are_flagged_not_repaired(cfg):
     assert any("previous_close" in i for i in snap.schema_issues) and snap.previous_close is None
     _, rep = clean_candles(snap.candles, cfg, "CIPLA", schema_issues=snap.schema_issues)
     assert rep.quality == "DEGRADED"
-    for missing in ("status", "symbol", "candles_1m"):
+    for missing in ("status", "symbol"):
         d = _doc()
         del d[missing]
         with pytest.raises(MalformedPayloadError, match="required"):
