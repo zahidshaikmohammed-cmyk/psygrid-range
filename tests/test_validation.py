@@ -73,3 +73,31 @@ def test_freshness(cfg):
     assert not is_market_open(ist("2026-03-07 11:00"), cfg)  # Saturday
     assert is_market_open(ist("2026-03-02 15:29:30"), cfg)
     assert not is_market_open(ist("2026-03-02 15:30"), cfg)
+
+
+def test_future_candles_flagged(cfg):
+    rows = [("2026-03-02 09:15", 1, 1, 1, 1, 1), ("2026-03-02 09:16", 1, 1, 1, 1, 1), ("2026-03-02 11:00", 1, 1, 1, 1, 1)]
+    clean, rep = clean_candles(_frame(rows), cfg, "X", now=ist("2026-03-02 09:20").to_pydatetime())
+    assert rep.n_future == 1 and len(clean) == 2 and rep.quality != "GOOD"
+
+
+def test_multi_date_live_payload_flagged(cfg):
+    rows = [("2026-03-02 15:29", 1, 1, 1, 1, 1), ("2026-03-03 09:15", 1, 1, 1, 1, 1)]
+    _, rep = clean_candles(_frame(rows), cfg, "X", single_session=True)
+    assert any("spans 2 dates" in i for i in rep.issues)
+
+
+def test_timezone_conversion_to_ist(cfg):
+    df = pd.DataFrame({"timestamp": [pd.Timestamp("2026-03-02 03:45", tz="UTC")], "open": [1.0], "high": [1.0],
+                       "low": [1.0], "close": [1.0], "volume": [1.0]})
+    clean, rep = clean_candles(df, cfg, "X")
+    assert clean.index[0] == ist("2026-03-02 09:15") and str(clean.index.tz) == "Asia/Kolkata"
+
+
+def test_negative_volume_and_impossible_ohlc_dropped(cfg):
+    rows = [("2026-03-02 09:15", 10, 11, 9, 10, -5),      # negative volume
+            ("2026-03-02 09:16", 10, 9.5, 9, 10, 1),      # high < open
+            ("2026-03-02 09:17", 10, 11, 10.5, 10, 1),    # low > close
+            ("2026-03-02 09:18", 10, 11, 9, 10, 1)]
+    clean, rep = clean_candles(_frame(rows), cfg, "X")
+    assert rep.n_ohlc_violations == 3 and len(clean) == 1

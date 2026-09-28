@@ -73,31 +73,62 @@ def intraday_log_returns(grid: pd.DataFrame) -> pd.Series:
 # --------------------------------------------------------------------------- #
 # Market / sector context
 # --------------------------------------------------------------------------- #
+PROXY_SOURCE = "NIFTY50_PROXY"
+INDEX_SOURCE = "NIFTY50_INDEX"
+CONTEXT_SOURCES = (PROXY_SOURCE, INDEX_SOURCE)
+
+
 @dataclass
 class MarketContext:
-    """Per-minute cross-sectional returns of the universe.
+    """Per-minute market and sector returns.
 
-    ``frame`` columns: ``m_lr`` (equal-weight mean 1m log return), ``m_count``,
-    ``m_frac`` (fraction of universe present) and per-sector
-    ``sec_sum::<SECTOR>`` / ``sec_cnt::<SECTOR>`` to allow leave-one-out
-    sector returns.
+    ``source`` is either ``NIFTY50_PROXY`` - an *equal-weight* average of the
+    constituents' 1-minute log returns built by this engine, which is **not**
+    the official cap-weighted NIFTY 50 index - or ``NIFTY50_INDEX`` when a
+    genuine index OHLCV series is configured (``index_symbol`` in the
+    universe file).  The two are never mixed: a model records the source it
+    was trained with and refuses a different one at inference.
+
+    ``frame`` columns: ``m_lr`` (market 1m log return), ``m_count``,
+    ``m_frac`` (coverage), and per-sector ``sec_sum::<SECTOR>`` /
+    ``sec_cnt::<SECTOR>`` (constituent sums, for leave-one-out sector returns).
     """
 
     frame: pd.DataFrame
     universe_size: int
-    source: str = "equal_weight_proxy"
+    source: str = PROXY_SOURCE
 
 
-def build_market_context(lrs: dict[str, pd.Series], cfg: EngineConfig) -> MarketContext | None:
-    """Build the equal-weighted NIFTY-50 proxy from constituent 1m returns."""
+def build_market_context(
+    lrs: dict[str, pd.Series],
+    cfg: EngineConfig,
+    *,
+    index_lr: pd.Series | None = None,
+) -> MarketContext | None:
+    """Build market context.  With ``market_context.source == NIFTY50_PROXY``
+    the market series is the equal-weight constituent average (only where at
+    least ``min_constituent_fraction`` of the universe is present).  With
+    ``NIFTY50_INDEX`` it is the supplied genuine index series and nothing else."""
     if not lrs:
         return None
+    source = cfg["market_context"].get("source", PROXY_SOURCE)
+    if source not in CONTEXT_SOURCES:
+        raise ValueError(f"unknown market_context.source {source!r}")
     panel = pd.DataFrame(lrs).sort_index()
     n_univ = len(cfg.universe.constituents)
     cnt = panel.notna().sum(axis=1)
     frac = cnt / n_univ
-    min_frac = float(cfg["market_context"]["min_constituent_fraction"])
-    m_lr = panel.mean(axis=1, skipna=True).where(frac >= min_frac)
+    if source == INDEX_SOURCE:
+        if index_lr is None or index_lr.dropna().empty:
+            return None
+        idx = panel.index.union(index_lr.index)
+        panel = panel.reindex(idx)
+        cnt = panel.notna().sum(axis=1)
+        m_lr = index_lr.reindex(idx)
+        frac = m_lr.notna().astype(float).where(m_lr.notna())
+    else:
+        min_frac = float(cfg["market_context"]["min_constituent_fraction"])
+        m_lr = panel.mean(axis=1, skipna=True).where(frac >= min_frac)
     out = {"m_lr": m_lr, "m_count": cnt, "m_frac": frac}
     for sector in sorted(set(cfg.universe.sectors.values())):
         members = [s for s in panel.columns if cfg.universe.sector_of(s) == sector]
@@ -105,7 +136,7 @@ def build_market_context(lrs: dict[str, pd.Series], cfg: EngineConfig) -> Market
             continue
         out[f"sec_sum::{sector}"] = panel[members].sum(axis=1, skipna=True)
         out[f"sec_cnt::{sector}"] = panel[members].notna().sum(axis=1)
-    return MarketContext(frame=pd.DataFrame(out), universe_size=n_univ)
+    return MarketContext(frame=pd.DataFrame(out), universe_size=n_univ, source=source)
 
 
 # --------------------------------------------------------------------------- #

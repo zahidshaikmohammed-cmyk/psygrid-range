@@ -37,11 +37,13 @@ class ValidationReport:
     n_ohlc_violations: int = 0
     n_outside_session: int = 0
     n_forming_dropped: int = 0
+    n_future: int = 0
     n_sessions: int = 0
     expected_minutes: int = 0
     missing_minutes: int = 0
     gap_fraction: float = 0.0
     largest_gap_minutes: int = 0
+    schema_issues: list[str] = field(default_factory=list)
     first_candle: str | None = None
     last_candle: str | None = None
     issues: list[str] = field(default_factory=list)
@@ -87,9 +89,19 @@ def clean_candles(
     *,
     n_malformed: int = 0,
     now: datetime | None = None,
+    schema_issues: list[str] | None = None,
+    single_session: bool = False,
 ) -> tuple[pd.DataFrame, ValidationReport]:
-    """Return (clean candles indexed by IST timestamp, report)."""
-    rep = ValidationReport(symbol=symbol.upper(), n_input=len(frame) + n_malformed, n_malformed=n_malformed)
+    """Return (clean candles indexed by IST timestamp, report).
+
+    ``single_session=True`` (live endpoint documents) flags a payload whose
+    candles span more than one date.  ``schema_issues`` from the envelope
+    parser are carried into the report and downgrade quality."""
+    rep = ValidationReport(symbol=symbol.upper(), n_input=len(frame) + n_malformed, n_malformed=n_malformed,
+                           schema_issues=list(schema_issues or []))
+    if n_malformed:
+        rep.issues.append(f"{n_malformed} malformed candle records (dropped)")
+    rep.issues.extend(f"schema: {i}" for i in rep.schema_issues)
     cols = ["open", "high", "low", "close", "volume"]
     if frame.empty:
         rep.issues.append("no parseable candles")
@@ -157,12 +169,22 @@ def clean_candles(
         rep.issues.append(f"{rep.n_outside_session} candles outside regular session (dropped)")
     df = df[in_session]
 
-    # A candle whose minute has not finished yet is still forming.
+    # Candles stamped after "now" are impossible (clock/feed error): flag + drop.
+    # A candle whose minute has not finished yet is still forming: drop.
     if now is not None and not df.empty:
         now_ts = pd.Timestamp(now).tz_convert(cfg.tz)
-        forming = (df["timestamp"] + pd.Timedelta(minutes=1)) > now_ts
+        future = df["timestamp"] > now_ts
+        rep.n_future = int(future.sum())
+        if rep.n_future:
+            rep.issues.append(f"{rep.n_future} candles time-stamped in the future (dropped)")
+        forming = ~future & ((df["timestamp"] + pd.Timedelta(minutes=1)) > now_ts)
         rep.n_forming_dropped = int(forming.sum())
-        df = df[~forming]
+        df = df[~future & ~forming]
+
+    if single_session and not df.empty:
+        n_dates = df["timestamp"].dt.normalize().nunique()
+        if n_dates > 1:
+            rep.issues.append(f"live payload spans {n_dates} dates (expected one session)")
 
     df = df.set_index("timestamp")[cols].astype(float)
     df.index.name = "timestamp"
@@ -207,6 +229,7 @@ def clean_candles(
     elif (
         rep.gap_fraction > vcfg.get("degraded_gap_fraction", 0.02)
         or rep.n_duplicates_conflicting or rep.n_ohlc_violations or rep.n_malformed
+        or rep.n_future or rep.schema_issues
     ):
         rep.quality = DEGRADED
     else:

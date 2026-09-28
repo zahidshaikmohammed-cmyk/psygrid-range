@@ -1,13 +1,34 @@
 {
-  "model_version": "psygrid-range-v1",
+  "model_version": "psygrid-range-v1.1",
   "universe_file": "nifty50.json",
   "data_source": {
-    "endpoint_template": "http://140.245.226.102:10000/public/stock/{symbol}.json",
-    "timeout_seconds": 10,
+    "base_url": "http://140.245.226.102:10000",
+    "stock_path": "/public/stock/{symbol}.json",
+    "connect_timeout_seconds": 5,
+    "read_timeout_seconds": 10,
     "retries": 1,
     "backoff_seconds": 1.0,
+    "max_retry_after_seconds": 10,
+    "max_response_bytes": 20000000,
     "cache_ttl_seconds": 20,
-    "user_agent": "psygrid-range/1.0"
+    "save_raw_live": true,
+    "user_agent": "psygrid-range/1.1",
+    "expected_service": null,
+    "required_fields": [
+      "status",
+      "symbol",
+      "candles_1m"
+    ],
+    "expected_fields": [
+      "service",
+      "schema_version",
+      "status",
+      "symbol",
+      "security_id",
+      "previous_close",
+      "today_open",
+      "candles_1m"
+    ]
   },
   "session": {
     "timezone": "Asia/Kolkata",
@@ -58,9 +79,6 @@
       "early_stopping_rounds": 50
     }
   },
-  "baseline": {
-    "type": "empirical_tod"
-  },
   "walk_forward": {
     "min_train_sessions": 20,
     "calibration_sessions": 5,
@@ -84,13 +102,28 @@
     "high_min_skill": 0.05,
     "symbol_min_sessions": 5,
     "symbol_high_coverage_tolerance": 0.07,
-    "domain_quantile": 0.005
+    "domain_quantile": 0.005,
+    "medium_min_skill_tstat": 1.0,
+    "high_min_skill_tstat": 2.0,
+    "edge_min_skill_tstat": 2.0,
+    "edge_min_sessions": 10
   },
   "market_context": {
     "enabled": true,
+    "source": "NIFTY50_PROXY",
     "min_constituent_fraction": 0.6,
-    "live_fetch_workers": 8,
-    "fetch_timeout_seconds": 5,
-    "fetch_retries": 0
-  }
+    "live_fetch_workers": 6,
+    "fetch_connect_timeout_seconds": 3,
+    "fetch_read_timeout_seconds": 6,
+    "fetch_retries": 0,
+    "total_deadline_seconds": 25
+  },
+  "provenance": {
+    "allow_synthetic_model": false
+  },
+  "baselines": [
+    "empirical_tod",
+    "volatility_only",
+    "recent_realized_vol"
+  ]
 }

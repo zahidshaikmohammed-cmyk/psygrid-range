@@ -44,6 +44,12 @@ class Paths:
         return self.data / "raw"
 
     @property
+    def raw_live(self) -> Path:
+        """Archived raw endpoint documents (audit trail), kept apart from the
+        per-symbol candle history."""
+        return self.raw / "live"
+
+    @property
     def processed(self) -> Path:
         return self.data / "processed"
 
@@ -142,6 +148,9 @@ def load_config(overrides: dict | None = None, root: Path | str | None = None) -
         raw = json.load(fh)
     if overrides:
         raw = _deep_update(raw, overrides)
+    env_url = os.environ.get("PSYGRID_BASE_URL")
+    if env_url:
+        raw["data_source"]["base_url"] = env_url.strip().rstrip("/")
     universe = load_universe(raw["universe_file"])
     root_path = Path(root or os.environ.get("PSYGRID_HOME") or PROJECT_ROOT)
     return EngineConfig(raw=raw, universe=universe, paths=Paths(root_path))

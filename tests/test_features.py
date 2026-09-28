@@ -101,3 +101,19 @@ def test_symbol_frame_has_regimes_and_targets(cfg, market):
     fr = build_symbol_frame(_hist(market, "INFY", 4), cfg, "INFY")
     for col in ("regime", "volatility_state", "structure", "relative_strength", "y_up", "y_lo", "target_valid"):
         assert col in fr.columns
+
+
+def test_proxy_is_labelled_and_index_is_never_mixed(cfg, market):
+    from engine.features import INDEX_SOURCE, PROXY_SOURCE
+
+    syms = list(market)
+    grids = {s: to_minute_grid(_hist(market, s, 2), cfg) for s in syms}
+    lrs = {s: intraday_log_returns(g) for s, g in grids.items()}
+    ctx = build_market_context(lrs, cfg)
+    assert ctx.source == PROXY_SOURCE == "NIFTY50_PROXY"
+    cfg.raw["market_context"]["source"] = INDEX_SOURCE
+    assert build_market_context(lrs, cfg) is None  # no genuine index series -> no context, never the proxy
+    index_lr = lrs["TCS"] * 0.5
+    ictx = build_market_context(lrs, cfg, index_lr=index_lr)
+    assert ictx.source == INDEX_SOURCE
+    pd.testing.assert_series_equal(ictx.frame["m_lr"].reindex(index_lr.index), index_lr, check_names=False)

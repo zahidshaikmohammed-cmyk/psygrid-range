@@ -35,7 +35,8 @@ def test_backtest_records_and_metrics(trained_home):
     _, res = trained_home
     r = res.records
     required = {"timestamp", "symbol", "current_price", "predicted_low", "predicted_high", "actual_low", "actual_high",
-                "covered_probable", "regime", "tod_bucket", "volatility_state", "pinball_model", "pinball_baseline"}
+                "covered_probable", "regime", "tod_bucket", "volatility_state", "pinball_model", "pinball_base::empirical_tod",
+                "pinball_base::volatility_only", "pinball_base::recent_realized_vol"}
     assert required.issubset(r.columns)
     assert (r["predicted_low"] < r["current_price"]).mean() > 0.95
     assert (r["predicted_high"] > r["current_price"]).mean() > 0.95

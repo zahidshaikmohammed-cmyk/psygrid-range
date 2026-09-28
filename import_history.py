@@ -5,7 +5,9 @@
 
 CSV columns (case-insensitive): timestamp, open, high, low, close, volume.
 Timestamps without a timezone are interpreted as IST.  Every candle passes the
-same validation as live data; nothing is filled or synthesised.
+same validation as live data; nothing is filled or synthesised.  Each session
+is labelled with its provenance ("import:<file name>") in the store.
+Only import genuine market data: synthetic data must never be imported.
 """
 import argparse
 import sys
@@ -32,7 +34,7 @@ def import_file(path: Path, symbol: str, cfg, store) -> str:
         return f"{symbol}: missing columns {missing}"
     frame, bad, _ = parse_candles(df[need].values.tolist(), cfg.tz)
     clean, rep = clean_candles(frame, cfg, symbol, n_malformed=bad)
-    touched = store.save(symbol, clean)
+    touched = store.save(symbol, clean, source=f"import:{path.name}")
     return (f"{symbol}: {rep.n_valid} candles in {len(touched)} sessions, quality {rep.quality}"
             + (f" [{'; '.join(rep.issues)}]" if rep.issues else ""))
 
@@ -57,7 +59,8 @@ def main() -> int:
         return 2
     for path, sym in jobs:
         try:
-            sym = cfg.universe.normalize(sym)
+            if sym != (cfg.universe.index_symbol or "").upper():
+                sym = cfg.universe.normalize(sym)
         except KeyError as exc:
             print(f"skip {path}: {exc.args[0]}")
             continue

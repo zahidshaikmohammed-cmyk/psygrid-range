@@ -26,6 +26,9 @@ def build_parser(symbol: str | None) -> argparse.ArgumentParser:
     p.add_argument("--analysis", action="store_true", help="when the market is closed, evaluate the last stored state")
     p.add_argument("--as-of", metavar="'YYYY-MM-DD HH:MM'", help="replay from local history at this IST time (no network)")
     p.add_argument("--no-context", action="store_true", help="skip fetching the other constituents for market context")
+    p.add_argument("--remaining-session", action="store_true",
+                   help="after 14:30, give an explicitly labelled forecast for the minutes left to the close "
+                        "(the standard command only ever gives a true next-60-minute forecast)")
     p.add_argument("--ascii", action="store_true", help="print 'Rs.' instead of the rupee sign")
     p.add_argument("-v", "--verbose", action="store_true", help="show quantiles, data issues and context details")
     return p
@@ -45,6 +48,7 @@ def run(symbol: str | None = None, argv: list[str] | None = None) -> int:
             as_of=args.as_of,
             allow_closed=args.analysis,
             use_context=False if args.no_context else None,
+            remaining_session=args.remaining_session,
         )
     except KeyError as exc:
         print(f"error: {exc.args[0]}", file=sys.stderr)

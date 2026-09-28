@@ -55,6 +55,19 @@ def load_clean_history(store: HistoryStore, cfg: EngineConfig, symbol: str, **kw
     return clean
 
 
+def index_log_returns(store: HistoryStore, cfg: EngineConfig, **kw) -> pd.Series | None:
+    """1-minute returns of the genuine index series, when one is configured
+    (``index_symbol`` in the universe file and ``market_context.source ==
+    NIFTY50_INDEX``).  Returns None otherwise - never a substitute."""
+    sym = cfg.universe.index_symbol
+    if cfg["market_context"].get("source") != "NIFTY50_INDEX" or not sym:
+        return None
+    candles = load_clean_history(store, cfg, sym, **kw)
+    if candles.empty:
+        return None
+    return intraday_log_returns(to_minute_grid(candles, cfg))
+
+
 def build_training_frame(
     cfg: EngineConfig,
     symbols: list[str] | None = None,
@@ -77,7 +90,8 @@ def build_training_frame(
             grids[s] = to_minute_grid(candles, cfg)
     context = None
     if use_context:
-        context = build_market_context({s: intraday_log_returns(g) for s, g in grids.items()}, cfg)
+        context = build_market_context({s: intraday_log_returns(g) for s, g in grids.items()}, cfg,
+                                       index_lr=index_log_returns(store, cfg))
 
     frames = []
     for i, s in enumerate(symbols):

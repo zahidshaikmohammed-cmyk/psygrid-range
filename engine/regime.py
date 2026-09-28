@@ -93,3 +93,39 @@ def classify(f: pd.DataFrame) -> pd.DataFrame:
     out["regime_code"] = pd.Categorical(out["regime"], categories=REGIMES).codes.astype(int)
     out["vol_state_code"] = pd.Categorical(out["volatility_state"], categories=VOL_STATES).codes.astype(int)
     return out
+
+
+def describe(row: pd.Series, market_label: str = "NIFTY50_PROXY") -> dict[str, str]:
+    """Plain-language description of the current state for the CLI.
+
+    These labels *describe* the inputs the model saw; they are not trading
+    rules and they do not decide the range (the quantile model does)."""
+    from .features import TOD_BUCKETS
+
+    def g(k):
+        v = row.get(k)
+        return None if v is None or not np.isfinite(v) else float(v)
+
+    va = g("vol_acc")
+    vol = "UNKNOWN" if va is None else ("EXPANDING" if va >= 1.3 else "COMPRESSING" if va <= 0.75 else "STABLE")
+    rv = g("rvol_15")
+    rvol = "UNKNOWN" if rv is None else ("HIGH" if rv >= np.log(1.5) else "LOW" if rv <= np.log(0.67) else "NORMAL")
+    tv = g("trend_votes")
+    trend = "UNKNOWN" if tv is None else ("BULLISH" if tv >= 3 else "BEARISH" if tv <= -3 else "MIXED")
+    m = g("m_z_ret_30")
+    mv = g("m_vol_ratio")
+    if m is None:
+        market = "UNAVAILABLE"
+    else:
+        market = "RISING" if m >= 1.0 else "FALLING" if m <= -1.0 else "FLAT"
+        if mv is not None and mv >= HIGH_VOL_RATIO:
+            market += ", VOLATILE"
+    tod = row.get("tod_bucket")
+    return {
+        "volatility": vol,
+        "relative_volume": rvol,
+        "trend_structure": trend,
+        "relative_strength": str(row.get("relative_strength", "UNAVAILABLE")),
+        "market": f"{market} ({market_label})",
+        "time_regime": TOD_BUCKETS[int(tod)] if tod is not None and np.isfinite(tod) else "UNKNOWN",
+    }

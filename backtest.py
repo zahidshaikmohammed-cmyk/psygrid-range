@@ -29,8 +29,12 @@ def main() -> int:
     if res.status == "WARM_UP":
         print(f"WARM-UP: {res.message}")
         return 1
-    print(format_report(res.summary, cfg["intervals"]))
+    print(format_report(res.summary, cfg["intervals"], cfg["confidence"]))
     print(f"\nrecords: {cfg.paths.processed / ('backtest_' + cfg.model_version + '.csv')}")
+    if res.provenance.get("synthetic") or res.provenance.get("unknown"):
+        print("NOTE: the stored history includes synthetic or unlabelled data - these results are NOT")
+        print("evidence of real-market skill.")
+    print("Coverage shows calibration; skill vs the best baseline shows whether the model adds anything.")
     if args.json:
         with open(args.json, "w", encoding="utf-8") as fh:
             json.dump(res.summary, fh, indent=2)

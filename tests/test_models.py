@@ -73,3 +73,29 @@ def test_two_sided_asymmetry(tmp_path):
 def test_unknown_model_type():
     with pytest.raises(KeyError):
         make_model("nope", Q)
+
+
+def test_scaled_baselines():
+    from engine.models import BASELINES, make_baseline
+
+    assert set(BASELINES) == {"empirical_tod", "volatility_only", "recent_realized_vol"}
+    rng = np.random.default_rng(0)
+    n = 4000
+    rv = rng.uniform(0.5, 2.0, n)
+    X = pd.DataFrame({"rv_60": rv, "tod_bucket": 0})
+    y = np.abs(rng.standard_normal(n)) * rv
+    b = make_baseline("recent_realized_vol", Q).fit(X, y)
+    p = b.predict(pd.DataFrame({"rv_60": [1.0, 2.0, np.nan], "tod_bucket": 0}))
+    assert np.allclose(p[1], 2 * p[0]) and np.all(np.isfinite(p[2]))  # scales with recent vol, NaN -> fallback
+    v = make_baseline("volatility_only", Q).fit(X, y)
+    assert np.allclose(v.predict(X)[0], np.quantile(y, Q))
+
+
+def test_baseline_roundtrip(tmp_path):
+    from engine.models import make_baseline
+
+    X, y = _data()
+    X["rv_60"] = 1.0
+    b = make_baseline("recent_realized_vol", Q).fit(X, y)
+    b.save(tmp_path / "b")
+    assert np.allclose(load_model(tmp_path / "b").predict(X), b.predict(X))

@@ -6,9 +6,21 @@ models (:class:`TwoSidedModel`), so the forecast range is asymmetric whenever
 the conditional distributions are.
 
 Implementations
-  empirical_tod      Baseline: empirical quantiles per time-of-day bucket.
-                     "What does an hour usually look like at this time?"
-  lightgbm_quantile  One LightGBM booster per quantile (pinball objective).
+  empirical_tod        Baseline: empirical quantiles per time-of-day bucket.
+                       "What does an hour usually look like at this time?"
+  volatility_only      Baseline: one set of quantiles times the current
+                       volatility estimate (range proportional to sigma*sqrt(H)).
+  recent_realized_vol  Baseline: quantiles times the last-60-minute realised
+                       volatility (range proportional to realised vol).
+  lightgbm_quantile    One LightGBM booster per quantile (pinball objective).
+
+The baselines are fitted on exactly the same training rows as the model and
+are not tuned; the model must beat the *best* of them to show an edge.
+
+Extension point (not active): a historical-analog component or an ensemble
+can be added as another ``QuantileModel`` (e.g. k-nearest-state empirical
+quantiles) and combined before calibration.  Nothing enters the production
+forecast until the walk-forward backtest shows it adds out-of-sample value.
 
 Add a model by subclassing :class:`QuantileModel` and registering it in
 ``MODEL_REGISTRY``; training, calibration and evaluation are model-agnostic.
@@ -109,6 +121,56 @@ class EmpiricalQuantileBaseline(QuantileModel):
         return m
 
 
+class EmpiricalScaledBaseline(QuantileModel):
+    """Quantiles of ``y / scale`` times ``scale``.  ``scale_col=None`` gives
+    constant quantiles of the (already volatility-normalised) target."""
+
+    name = "empirical_scaled"
+
+    def __init__(self, quantiles, scale_col: str | None = None, label: str = "", **params):
+        super().__init__(quantiles, **params)
+        self.scale_col, self.label = scale_col, label or (scale_col or "constant")
+        self.q_ratio: list[float] = []
+        self.q_fallback: list[float] = []
+
+    def _scale(self, X) -> np.ndarray:
+        if self.scale_col is None:
+            return np.ones(len(X))
+        return X[self.scale_col].to_numpy(float)
+
+    def fit(self, X, y, *, X_val=None, y_val=None):
+        y = np.asarray(y, float)
+        sc = self._scale(X)
+        ok = np.isfinite(y)
+        good = ok & np.isfinite(sc) & (sc > 0)
+        self.q_fallback = np.quantile(y[ok], self.quantiles).tolist()
+        self.q_ratio = np.quantile(y[good] / sc[good], self.quantiles).tolist() if good.sum() > 50 else self.q_fallback
+        self.features = [self.scale_col] if self.scale_col else []
+        return self
+
+    def predict_raw(self, X):
+        sc = self._scale(X)
+        out = np.outer(sc, self.q_ratio)
+        bad = ~(np.isfinite(sc) & (sc > 0))
+        out[bad] = self.q_fallback
+        return out
+
+    def save(self, directory: Path) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "baseline.json").write_text(json.dumps(
+            {"name": self.name, "quantiles": self.quantiles, "scale_col": self.scale_col, "label": self.label,
+             "q_ratio": self.q_ratio, "q_fallback": self.q_fallback}
+        ))
+
+    @classmethod
+    def load(cls, directory: Path) -> "EmpiricalScaledBaseline":
+        d = json.loads((directory / "baseline.json").read_text())
+        m = cls(d["quantiles"], scale_col=d["scale_col"], label=d["label"])
+        m.q_ratio, m.q_fallback = d["q_ratio"], d["q_fallback"]
+        m.features = [d["scale_col"]] if d["scale_col"] else []
+        return m
+
+
 class LightGBMQuantileModel(QuantileModel):
     name = "lightgbm_quantile"
 
@@ -175,8 +237,22 @@ class LightGBMQuantileModel(QuantileModel):
 
 MODEL_REGISTRY: dict[str, type[QuantileModel]] = {
     EmpiricalQuantileBaseline.name: EmpiricalQuantileBaseline,
+    EmpiricalScaledBaseline.name: EmpiricalScaledBaseline,
     LightGBMQuantileModel.name: LightGBMQuantileModel,
 }
+
+BASELINES: dict[str, tuple[type[QuantileModel], dict]] = {
+    "empirical_tod": (EmpiricalQuantileBaseline, {}),
+    "volatility_only": (EmpiricalScaledBaseline, {"scale_col": None, "label": "volatility_only"}),
+    "recent_realized_vol": (EmpiricalScaledBaseline, {"scale_col": "rv_60", "label": "recent_realized_vol"}),
+}
+
+
+def make_baseline(name: str, quantiles: list[float]) -> QuantileModel:
+    if name not in BASELINES:
+        raise KeyError(f"unknown baseline {name!r}; available: {sorted(BASELINES)}")
+    cls, kw = BASELINES[name]
+    return cls(quantiles, **kw)
 
 
 def make_model(kind: str, quantiles: list[float], params: dict | None = None) -> QuantileModel:

@@ -13,7 +13,7 @@ import pandas as pd
 from .calibration import ConformalCalibrator
 from .config import EngineConfig
 from .features import CONTEXT_FEATURES
-from .models import TwoSidedModel, make_model
+from .models import TwoSidedModel, make_baseline, make_model
 
 DOMAIN_FEATURES = [
     "log_sigma", "vol_ratio_ref", "rv_15", "z_ret_15", "z_ret_60", "gap",
@@ -37,22 +37,26 @@ def select_features(frame: pd.DataFrame, use_context: bool) -> list[str]:
 @dataclass
 class FittedPipeline:
     model: TwoSidedModel
-    baseline: TwoSidedModel
+    baselines: dict[str, TwoSidedModel]
     calibrator: ConformalCalibrator
     features: list[str]
     domain: dict[str, list[float]]
     use_context: bool
+    context_source: str | None = None
     train_sessions: list[str] = field(default_factory=list)
     calibration_sessions: list[str] = field(default_factory=list)
     symbols: list[str] = field(default_factory=list)
+    n_train_rows: int = 0
 
     # ------------------------------------------------------------------ predict
     def predict(self, frame: pd.DataFrame) -> dict[str, np.ndarray]:
         X = frame[self.features]
         Qu, Ql = self.model.predict(X)
-        Bu, Bl = self.baseline.predict(frame)
         cal = self.calibrator.apply(Qu, Ql, frame["tod_bucket"].to_numpy(), frame["symbol"].to_numpy())
-        cal.update(raw_up=Qu, raw_lo=Ql, base_up=Bu, base_lo=Bl)
+        cal.update(raw_up=Qu, raw_lo=Ql)
+        for name, b in self.baselines.items():
+            Bu, Bl = b.predict(frame)
+            cal[f"base_up::{name}"], cal[f"base_lo::{name}"] = Bu, Bl
         return cal
 
     def out_of_domain(self, frame: pd.DataFrame) -> list[list[str]]:
@@ -72,15 +76,19 @@ class FittedPipeline:
     def save(self, model_dir: Path, calibration_file: Path, extra: dict | None = None) -> None:
         model_dir.mkdir(parents=True, exist_ok=True)
         self.model.save(model_dir / "model")
-        self.baseline.save(model_dir / "baseline")
+        for name, b in self.baselines.items():
+            b.save(model_dir / "baselines" / name)
         meta = {
             "features": self.features, "domain": self.domain, "use_context": self.use_context,
+            "context_source": self.context_source, "baselines": sorted(self.baselines),
             "train_sessions": self.train_sessions, "calibration_sessions": self.calibration_sessions,
-            "symbols": self.symbols, "created_at": datetime.now().astimezone().isoformat(),
+            "symbols": self.symbols, "n_train_rows": self.n_train_rows,
+            "created_at": datetime.now().astimezone().isoformat(),
+            **(extra or {}).get("bundle", {}),
         }
         (model_dir / "bundle.json").write_text(json.dumps(meta, indent=2))
         calibration_file.parent.mkdir(parents=True, exist_ok=True)
-        blob = {"calibrator": self.calibrator.to_dict(), **(extra or {})}
+        blob = {"calibrator": self.calibrator.to_dict(), **{k: v for k, v in (extra or {}).items() if k != "bundle"}}
         calibration_file.write_text(json.dumps(blob, indent=2, default=_json_default))
 
     @classmethod
@@ -89,11 +97,12 @@ class FittedPipeline:
         blob = json.loads(calibration_file.read_text())
         pipe = cls(
             model=TwoSidedModel.load(model_dir / "model"),
-            baseline=TwoSidedModel.load(model_dir / "baseline"),
+            baselines={n: TwoSidedModel.load(model_dir / "baselines" / n) for n in meta.get("baselines", [])},
             calibrator=ConformalCalibrator.from_dict(blob["calibrator"]),
             features=meta["features"], domain=meta["domain"], use_context=meta["use_context"],
+            context_source=meta.get("context_source"),
             train_sessions=meta["train_sessions"], calibration_sessions=meta["calibration_sessions"],
-            symbols=meta["symbols"],
+            symbols=meta["symbols"], n_train_rows=int(meta.get("n_train_rows", 0)),
         )
         return pipe, {**meta, **{k: v for k, v in blob.items() if k != "calibrator"}}
 
@@ -145,9 +154,10 @@ def fit_pipeline(
         y_up_val=val_rows["y_up"].to_numpy() if len(val_rows) else None,
         y_lo_val=val_rows["y_lo"].to_numpy() if len(val_rows) else None,
     )
-    bkind = cfg["baseline"]["type"]
-    baseline = TwoSidedModel(make_model(bkind, q), make_model(bkind, q))
-    baseline.fit(tr, tr["y_up"].to_numpy(), tr["y_lo"].to_numpy())
+    baselines = {}
+    for bname in cfg["baselines"]:
+        b = TwoSidedModel(make_baseline(bname, q), make_baseline(bname, q))
+        baselines[bname] = b.fit(tr, tr["y_up"].to_numpy(), tr["y_lo"].to_numpy())
 
     cal = calib[calib["target_valid"].astype(bool)]
     if cal.empty:
@@ -168,7 +178,8 @@ def fit_pipeline(
             if len(v) > 100:
                 domain[k] = [float(np.quantile(v, dq)), float(np.quantile(v, 1 - dq))]
     return FittedPipeline(
-        model=model, baseline=baseline, calibrator=calibrator, features=features, domain=domain,
-        use_context=use_context, train_sessions=sessions, calibration_sessions=sorted(cal["session"].unique()),
-        symbols=sorted(tr["symbol"].unique()),
+        model=model, baselines=baselines, calibrator=calibrator, features=features, domain=domain,
+        use_context=use_context, context_source=cfg["market_context"].get("source") if use_context else None,
+        train_sessions=sessions, calibration_sessions=sorted(cal["session"].unique()),
+        symbols=sorted(tr["symbol"].unique()), n_train_rows=int(len(tr)),
     )

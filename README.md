@@ -1,270 +1,333 @@
 # PSYGRID RANGE ENGINE
 
 A probabilistic engine that estimates, from genuine 1-minute OHLCV, where a
-NIFTY-50 stock is likely to trade over the next 60 minutes. It predicts the
-distribution of the stock's next-hour high and low. It then turns that into a
-calibrated range.
+NIFTY-50 stock is likely to trade over the **next 60 minutes**.
 
-```powershell
-python cipla.py
-python tcs.py
-python range.py RELIANCE
-```
-
-It is **not** an ATR band, a fixed-percentage band or a direction call. The
-upside and downside are modelled separately and conditioned on the current
-market state. When the evidence is weak, the engine says so:
+It forecasts the distributions of the next-hour **high** and **low**
+separately, using quantile models conditioned on the current market state.
+It calibrates them on held-out data, validates them walk-forward against
+three baselines, and refuses to output a range when the evidence is weak.
 
 ```
 NO RELIABLE FORECAST / INSUFFICIENT EDGE
 ```
 
-> **Current status: WARM-UP.** The live PSYGRID endpoint only serves the
-> current session. No accuracy claim exists until history has been collected
-> and `train.py` has produced out-of-sample walk-forward results on real data.
-> Until then every forecast reports `WARMING_UP`.
+That refusal is a successful result, not a failure.
+
+> **Current status: WARM-UP. Real-data accuracy: NOT ESTABLISHED.**
+> The code has only been exercised on synthetic data, because the build
+> sandbox cannot reach the PSYGRID endpoint. Synthetic results show that the
+> mechanics work. They are **not** evidence of real-market skill. Real
+> evidence exists only after you collect real history, run `train.py`, and it
+> reports positive, statistically distinguishable out-of-sample skill.
 
 ---
 
-## 1. Quick start (Windows PowerShell)
+## 1. Workflow (Windows PowerShell)
+
+### First time
 
 ```powershell
-cd psygrid-range
+cd C:\path\to\psygrid-range
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt       # includes tzdata (needed for IST on Windows)
-
-python collect.py                     # snapshot today's candles for all 50 stocks
-python train.py --status              # how much history is stored? WARM-UP or READY
-python train.py                       # walk-forward backtest + calibrated model
-python cipla.py                       # live forecast
+pip install -r requirements.txt
+python -m pytest -q                      # optional: run the test suite
 ```
 
-### Building history
+If activation is blocked, run
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once.
 
-The live endpoint only has today's candles, so history has to be accumulated:
+### 1. Test the real endpoint
 
-| Method | How |
-|---|---|
-| Daily snapshot | Run `python collect.py` every trading day after 15:30 IST, for example from Windows Task Scheduler. Every `cipla.py` run also stores what it fetched. |
-| Import | `python import_history.py --dir D:\exports`. Put one `<SYMBOL>.csv` per stock with columns `timestamp,open,high,low,close,volume`. Naive timestamps are treated as IST. |
+```powershell
+python diagnose_endpoint.py CIPLA
+python diagnose_endpoint.py CIPLA --save-fixture   # also saves tests\fixtures\captured\CIPLA.json
+python -m pytest -q tests\test_real_fixture.py     # parse the real capture with the production parser
+```
 
-Training needs **32 sessions** by default: 20 train + 5 calibration + 5 test +
-2 embargo, which is enough for one walk-forward fold. That is a floor, not a
-target. HIGH_CONFIDENCE needs 20 out-of-sample sessions of evidence in the
-current state, so plan on roughly 60+ sessions before expecting HIGH outputs.
+This makes a real HTTP request from your machine and reports:
 
-### CLI options (every stock script and `range.py`)
+* HTTP status and response time
+* service, schema, endpoint status and security ID
+* candle count, first and last candle, and latest price
+* latest candle age
+* duplicates, missing minutes and impossible OHLC
+* timestamp format and timezone
+* data quality
+
+If the request fails, it reports `BAD_DATA` and shows `n/a` for every value
+it could not measure. Nothing is filled in.
+
+A different server can be used without editing files:
+
+```powershell
+$env:PSYGRID_BASE_URL = "http://140.245.226.102:10000"
+```
+
+### 2. Collect real history (every trading day)
+
+```powershell
+python collect.py --all-nifty50          # all 50 symbols from config\nifty50.json
+python collect.py --symbol CIPLA         # one symbol (repeatable)
+```
+
+* The live endpoint only serves the current session. Run the collector every
+  trading day, ideally once shortly after the 15:30 close.
+* Re-running is safe: candles merge by timestamp, never duplicate, and are
+  never interpolated.
+* Raw responses are archived in `data\raw\live\<SYMBOL>_<YYYYMMDD>.json`. A
+  smaller later capture never overwrites a fuller one.
+* Every `cipla.py` run also stores what it fetched.
+
+To schedule it with Task Scheduler, create a daily task at 15:40, Monday to Friday:
+* Program: `C:\path\to\psygrid-range\.venv\Scripts\python.exe`
+* Arguments: `collect.py --all-nifty50`
+* Start in: `C:\path\to\psygrid-range`
+
+If you have genuine historical 1-minute CSVs, you can import them. Each file
+is named `<SYMBOL>.csv` with columns `timestamp,open,high,low,close,volume`:
+
+```powershell
+python import_history.py --dir D:\exports
+```
+
+Never import synthetic data.
+
+### 3. Check history
+
+```powershell
+python train.py --status
+```
+
+This shows:
+* sessions and stocks available, total candles, last collected date, and data sources
+* model version, last training date and calibration status
+* validation coverage and skill against the best baseline
+* which stocks do and do not have a demonstrated edge
+* one line: **Real-data accuracy**
+
+### 4. Train (once the minimum real history exists)
+
+```powershell
+python train.py
+```
+
+32 sessions is the minimum needed to **begin** evaluation: 20 train +
+5 calibration + 5 test + 2 embargo. It is not evidence of accuracy.
+
+With about 60 sessions there are more walk-forward folds and per-state
+evidence, so calibration becomes more reliable. That is still not evidence
+of accuracy by itself.
+
+Only the out-of-sample report decides. Training never runs as part of a
+forecast.
+
+### 5. Evaluate
+
+```powershell
+python backtest.py
+python backtest.py --json backtest_summary.json
+```
+
+### 6. Live forecast
+
+```powershell
+python cipla.py
+python tcs.py
+python range.py CIPLA
+python range.py RELIANCE --json
+```
 
 | Flag | Meaning |
 |---|---|
-| `--json` | Machine-readable output only |
-| `--save-json PATH` | Also write the JSON forecast to a file |
-| `-v` | Show the quantile table, data issues and market-context details |
-| `--analysis` | When the market is closed, evaluate the last stored state (labelled ANALYSIS) |
-| `--as-of "2026-09-25 11:30"` | Replay from local history, no network, and show what actually happened. Sessions inside the model's train/calibration window are flagged IN-SAMPLE. |
-| `--no-context` | Skip fetching the other 49 stocks for NIFTY/sector context |
-| `--ascii` | Print `Rs.` instead of `₹` (for old consoles) |
+| `--json` / `--save-json PATH` | Machine-readable output |
+| `-v` | Quantile table, data issues, context details, raw-archive path |
+| `--as-of "2026-09-28 12:30"` | Replay from local history, with no network. Only candles before that time are used. Shows what actually happened and is labelled **OUT-OF-SAMPLE** or **IN-SAMPLE**. |
+| `--remaining-session` | After 14:30, gives an explicitly labelled forecast up to the close. The standard command never calls a shorter window "60 minutes". |
+| `--analysis` | When the market is closed, evaluates the last stored state (labelled ANALYSIS) |
+| `--no-context` | Skip fetching the other 49 stocks. The forecast is then refused if the model needs context. |
+| `--ascii` | Print `Rs.` instead of `₹` |
 
 ---
 
-## 2. Output
+## 2. Coverage is not accuracy
+
+| Term | Meaning |
+|---|---|
+| **Coverage** | The fraction of held-out hours whose *entire* next-hour high **and** low stayed inside the range. It checks *calibration*. A very wide range always has perfect coverage and is useless. |
+| **Width** | How wide the range is (% of price). Narrower is more useful at equal coverage. |
+| **Skill** | `1 − pinball_loss(model) / pinball_loss(best baseline)`, out-of-sample. It shows whether the model knows more than simple rules. |
+| **Demonstrated edge** | Skill > 0 **and** a per-session t-statistic ≥ 2 **and** coverage within tolerance, over ≥ 10 test sessions for a stock. The session is the unit of evidence because minutes within a session are strongly dependent. |
+
+Examples:
+* "78.5% coverage vs 80% nominal" on synthetic data means the calibration
+  arithmetic works. It is **not** "78.5% accuracy".
+* "+0.4% skill, t = 0.6" means **NO DEMONSTRATED EDGE**.
+
+### Baselines (never tuned to flatter the model)
+* `empirical_tod`: empirical excursion quantiles for each time-of-day bucket.
+* `volatility_only`: one set of quantiles times the current volatility estimate.
+* `recent_realized_vol`: quantiles times the last-60-minute realised volatility.
+
+The model is compared with the **best** of these by mean loss in every group
+(overall, per stock, per regime × time cell).
+
+---
+
+## 3. Forecast statuses (no invented percentages)
+
+| Status | When |
+|---|---|
+| `HIGH_CONFIDENCE` | All of the following hold: <br>• The current *(regime, time-of-day)* cell has at least 20 out-of-sample sessions. <br>• Coverage in that cell is within ±5 pp of nominal. <br>• Skill is at least 5% with a session t-statistic of at least 2. <br>• The stock's own out-of-sample skill has t ≥ 2 and coverage within ±7 pp. <br>• Data is GOOD, the state is in the training domain, and context is available. |
+| `MEDIUM_CONFIDENCE` | At least 5 sessions of evidence, coverage within ±10 pp, skill > 0 with t ≥ 1, and nothing disqualifying. |
+| `INSUFFICIENT_EDGE` | No range is given. Causes: <br>• the state is unvalidated or miscalibrated <br>• **NO DEMONSTRATED EDGE** in that state, or for that stock <br>• features are outside the training domain <br>• market context is insufficient or its source doesn't match the model <br>• fewer than 60 minutes remain (unless `--remaining-session` is used) |
+| `WARMING_UP` | No trained model, a model trained on synthetic or unlabelled data, or too little stored history. |
+| `BAD_DATA` | Network or HTTP failure, a malformed payload, candles failing validation, or stale data (the last candle closed more than 3 minutes ago while the market is open). |
+| `MARKET_CLOSED` | There is no live next-60-minute window. |
+
+The only percentages ever printed are nominal calibration targets and
+measured out-of-sample statistics. All thresholds are in
+`config\engine.json` under `confidence`.
+
+---
+
+## 4. Output
 
 ```
 ============================================================
-PSYGRID 1-HOUR RANGE ENGINE
+                PSYGRID 1-HOUR RANGE ENGINE
 ============================================================
 
-SYMBOL       : CIPLA
-PRICE        : ₹1,512.40
-TIMESTAMP    : 2026-09-28 11:30 IST
-DATA AGE     : last candle closed 0.4 min ago
+SYMBOL              : CIPLA
+CURRENT PRICE       : ₹XXXX.XX
+DATA TIME           : YYYY-MM-DD HH:MM:SS IST  (last complete candle HH:MM)
+SYSTEM TIME         : YYYY-MM-DD HH:MM:SS IST
+DATA AGE            : X.X min after candle close
 
 FORECAST HORIZON
 NEXT 60 MINUTES
 
-PROBABLE RANGE  (calibrated for 80% of hours to stay inside)
-LOW          : ₹1,503.10
-HIGH         : ₹1,524.90
-
-CENTRAL RANGE   (calibrated for 50%)
-...
-UPSIDE EXTENSION   : +0.83%
-DOWNSIDE EXTENSION : -0.61%
-
-MARKET REGIME      : TREND_UP
-VOLATILITY STATE   : NORMAL_VOLATILITY
-STRUCTURE          : HIGHER_HIGHS_HIGHER_LOWS
-RELATIVE STRENGTH  : OUTPERFORM
-
-FORECAST STATUS    : MEDIUM_CONFIDENCE
-  - 14 sessions of evidence (< 20 for HIGH)
-EVIDENCE           : 14 out-of-sample sessions in this state, 79% realised coverage, skill +6.1% vs baseline
+------------------------------------------------------------
+PROBABLE RANGE  (calibration target: 80% of held-out hours stayed fully inside)
+------------------------------------------------------------
+LOW                 : ₹XXXX.XX
+HIGH                : ₹XXXX.XX
+CENTRAL RANGE ...
+UPSIDE EXTENSION    : +X.XX%
+DOWNSIDE EXTENSION  : -X.XX%
+------------------------------------------------------------
+MARKET REGIME / VOLATILITY STATE / STRUCTURE / RELATIVE STRENGTH / FORECAST STATUS
+STATE (inputs the model saw; descriptive, not trading rules)
+MODEL EVIDENCE  (historical samples, regime match, market context, data quality, version)
+============================================================
 ```
-*(Illustrative layout only. The numbers are not real results.)*
+*(These are layout placeholders, not real values.)*
 
-**What the ranges mean.** A range "covers" an hour when that hour's entire
-high and low stay inside it. The *probable range* is calibrated so that, on
-held-out data, 80% of hours stayed fully inside. The *central range* is
-calibrated to 50%. Whether that held in each market state is measured by the
-backtest and drives the status, as described below.
-
-**JSON** (`--json`) contains every field from the specification (`symbol`,
-`timestamp`, `current_price`, `horizon_minutes`, `range`, `central_range`,
-`upside_pct`, `downside_pct`, `regime`, `volatility_state`,
-`forecast_status`, `data_quality`, `model_version`) plus:
-
-* `quantiles`: P10–P90 of the next-hour high and low, as prices.
-* `status_reasons` and `evidence`: the out-of-sample statistics behind the status.
-* `freshness`, `data_issues`, `market_context`, `structure`, `relative_strength`, `window_end`, `mode`.
-* `actual`: replay mode only.
-
-### Forecast statuses
-
-| Status | Meaning (thresholds in `config/engine.json`) |
-|---|---|
-| `HIGH_CONFIDENCE` | In walk-forward test data for the current *(regime, time-of-day)* cell: at least 20 sessions of evidence, realised coverage within ±5 pp of nominal, and pinball-loss skill of at least 5% over the baseline. This stock's own out-of-sample coverage is within ±7 pp. Data quality is GOOD, the state is inside the training domain, and market context is available. |
-| `MEDIUM_CONFIDENCE` | At least 5 sessions of evidence, coverage within ±10 pp, positive skill, and nothing disqualifying. |
-| `INSUFFICIENT_EDGE` | No range is given because of one of: an unvalidated state, a state that was miscalibrated out of sample, no skill over the baseline, features outside the training domain, missing market context, or fewer than 15 minutes left in the session. |
-| `WARMING_UP` | There is no trained model yet, or too little stored history for this stock. |
-| `BAD_DATA` | Network or endpoint failure, a malformed payload, candles that failed validation, or stale data (the last candle is more than 3 minutes old while the market is open). |
-| `MARKET_CLOSED` | There is no live next-60-minute window. Use `--analysis` or `--as-of` instead. |
-
-No status carries a made-up percentage. The only percentages shown are
-nominal coverage levels and realised out-of-sample statistics.
+The JSON output (`--json`) contains:
+* `symbol`, `timestamp`, `current_price`, `horizon_minutes`, `forecast_mode`
+* `range`, `central_range`, `upside_pct`, `downside_pct`, `quantiles` (P10–P90)
+* `regime`, `volatility_state`, `structure`, `relative_strength`, `explanation`
+* `forecast_status`, `status_reasons`, `evidence`, `model_evidence`, `replay_sample`
+* `data_quality`, `data_issues`, `freshness`, `market_context`, `model_version`
 
 ---
 
-## 3. Architecture
+## 5. Data handling
 
-```
-psygrid-range/
-├── engine/
-│   ├── config.py        engine.json + universe loading, paths (PSYGRID_HOME)
-│   ├── ingestion.py     PHASE 1  HTTP fetch, timeouts/retries, payload parsing, TTL cache
-│   ├── validation.py    PHASE 1  ordering, duplicates, OHLC, session, gaps, freshness
-│   ├── storage.py       PHASE 2  data/raw/<SYMBOL>/<YYYY-MM-DD>.csv merge-store
-│   ├── features.py      PHASE 3  causal features + NIFTY/sector context
-│   ├── regime.py                 multi-feature regime / volatility / structure / RS labels
-│   ├── targets.py       PHASE 4  next-60-minute high/low excursions
-│   ├── dataset.py                one code path for training and live frames
-│   ├── models.py        PHASE 5/6 empirical baseline + LightGBM quantile models (pluggable)
-│   ├── calibration.py   PHASE 7  joint conformalised quantile calibration
-│   ├── pipeline.py               fit/predict/persist the model + calibrator + domain
-│   ├── walkforward.py   PHASE 8  chronological folds, purge + embargo
-│   ├── evaluation.py    PHASE 8  forecast records and metrics by time/regime/vol/stock
-│   ├── confidence.py             evidence-based forecast status
-│   ├── training.py               warm-up gate -> backtest -> final model
-│   ├── forecasting.py   PHASE 9  RangeEngine.predict(symbol)
-│   ├── output.py                 terminal + JSON rendering
-│   └── cli.py           PHASE 10 shared CLI used by every script
-├── config/engine.json, config/nifty50.json
-├── data/raw | processed | calibration | cache
-├── models/<model_version>/
-├── cipla.py tcs.py infy.py reliance.py hdfcbank.py   (5-line wrappers)
-├── range.py train.py backtest.py collect.py import_history.py
-└── tests/
-```
+* **Source:** `data_source.base_url` + `/public/stock/{SYMBOL}.json`. The environment variable `PSYGRID_BASE_URL` overrides the base URL.
+* **Network:**
+  * separate connect (5 s) and read (10 s) timeouts, with bounded retries
+  * HTTP 429 and 5xx are retried with back-off and a bounded `Retry-After`
+  * responses over 20 MB are rejected
+  * nothing waits indefinitely
+* **Untrusted input:** the endpoint is only parsed as JSON data. Nothing from it is executed, evaluated or passed to a shell. Symbols are checked against `config\nifty50.json` before a URL is built.
+* **Schema:**
+  * `status`, `symbol` and `candles_1m` are required. A wrong status or symbol mismatch is rejected.
+  * Missing documented fields (`service`, `schema_version`, `security_id`, `previous_close`, `today_open`) or non-numeric prices are flagged, and quality becomes DEGRADED.
+* **Candles:**
+  * **Timestamps:** epoch seconds or milliseconds, or ISO with/without an offset. The detected format is reported. Naive times are treated as IST, and everything is converted to `Asia/Kolkata`.
+  * **Duplicates:** identical ones are collapsed. Conflicting ones are flagged, and the latest record is kept.
+  * **Dropped and flagged, never repaired:** impossible OHLC (high < max(open, close), low > min(open, close), high < low), negative volume, non-positive prices, candles outside the session, and candles stamped in the future.
+  * **Forming candle:** a candle still in progress is discarded.
+  * **Missing minutes** stay missing: they are counted, never filled.
+* **Freshness:** the engine tracks the latest candle, system time and age. Data older than 3 minutes during market hours is refused as `BAD_DATA`.
+* **Provenance:**
+  * Every stored session records its source (`psygrid_live`, `import:<file>` or `synthetic`) in `data\raw\<SYMBOL>\_provenance.json`.
+  * A model trained on any synthetic or unlabelled session refuses production forecasts (`WARMING_UP`).
+  * Synthetic generators live only in `tests\fixtures\`.
 
-There is one engine. `cipla.py` is literally `run("CIPLA")`. The universe
-is defined only in `config/nifty50.json`: edit it at NSE rebalances, or
-point `universe_file` at a larger list to expand beyond NIFTY-50.
+### NIFTY50_PROXY: not the NIFTY 50 index
+PSYGRID exposes no index endpoint, so market context comes from
+**`NIFTY50_PROXY`**. This is an *equal-weight* average of the constituents'
+1-minute returns, built by this engine. It is **not** the official
+free-float cap-weighted NIFTY 50, and it is labelled as a proxy wherever it
+appears.
 
-### Data handling
-* Timestamps can be epoch seconds or milliseconds, or ISO strings. Everything is converted to explicit `Asia/Kolkata`.
-* Malformed records are dropped and counted. Duplicates are collapsed (identical) or resolved to the latest record and flagged (conflicting). OHLC-violating candles and candles outside the session are dropped. Out-of-order records are re-sorted and flagged.
-* **Missing minutes are never filled.** Features sit on a minute grid where a gap stays NaN.
-* A still-forming last candle is discarded. Data older than 3 minutes during market hours is refused. The cache TTL is 20 s, and stale cache is never used.
+If a genuine index OHLCV feed becomes available:
+1. Set `index_symbol` in `config\nifty50.json`.
+2. Set `market_context.source` to `NIFTY50_INDEX`.
+3. Collect its history and retrain.
 
-### Features (all strictly causal; `tests/test_features.py` verifies this by altering the future)
-Most features are normalised by the stock's own volatility, so one pooled model can learn across stocks.
+The two sources are never mixed. A model records its context source and
+refuses a different one at inference.
 
-* **Returns:** 1/3/5/10/15/30/60-minute returns (within the session), acceleration, return since the open, overnight gap, distance from the 30/60-minute and session high/low, position within the session range.
-* **Volatility:** realised vol (15/30/60), EWMA vol (30/120), volatility relative to the stock's previous 5 sessions, vol acceleration, ATR (as a feature only), range compression/expansion, vol-of-vol.
-* **Candles:** body, wicks, body/range ratio, bullish fraction, signed run length, reversal patterns (hammer/shooting-star/engulfing after a move).
-* **Volume:** volume ratios, z-score, acceleration, signed volume, and relative volume versus the time-of-day profile of the prior 10 sessions. Volume enters only as state, never as a hard-coded "bullish" rule.
-* **Trend / structure:** EMA 9/20/50 distance, spreads and slopes, VWAP distance, trend persistence, higher-high/higher-low score, breakout/breakdown versus the prior 60-minute range, rejection wicks.
-* **Momentum:** RSI 14, momentum acceleration, z-distance from the 20-minute mean.
-* **Time:** minutes since open and to close, time-of-day bucket (OPEN / MORNING / MIDDAY / AFTERNOON / CLOSE), weekday, and intraday seasonality of volatility (current and expected over the next hour) from prior sessions.
-* **Context:**
-  * NIFTY proxy: an equal-weight average of 1-minute returns across the stored or fetched NIFTY-50 constituents. PSYGRID exposes no index endpoint; set `index_symbol` in `nifty50.json` if one becomes available.
-  * Market returns and volatility state.
-  * Stock-versus-market relative strength (5/15/30/60-minute), rolling beta and correlation.
-  * Leave-one-out sector relative strength.
+For live forecasts, the other 49 stocks are fetched with:
+* at most 6 concurrent requests
+* 3 s connect / 6 s read timeouts and no retries
+* a hard 25 s overall deadline
 
-### Regime layer
-The regime is decided by several vol-normalised signals voting together
-(EMA alignment, EMA slope, VWAP, structure, persistence, return
-t-statistics, volume and range dynamics):
-
-* **Primary regime:** `BREAKOUT`, `BREAKDOWN`, `REVERSAL`, `VOLATILITY_EXPANSION`, `TREND_UP`, `TREND_DOWN`, `COMPRESSION` or `RANGE`.
-* **Volatility state:** HIGH / NORMAL / LOW, versus the stock's own recent sessions.
-* **Structure** and **relative strength** labels.
-
-Regime and volatility codes are model inputs. The labels are also used to
-slice calibration diagnostics and to choose the evidence cell for the status.
-
-### Target
-For every minute *t*, with price = the close of candle *t*:
-
-* `upper_excursion = (max high[t+1..t+60] − price) / price`
-* `lower_excursion = (price − min low[t+1..t+60]) / price`
-
-The window stops at the close (the horizon is truncated after 14:30 and shown
-as such) and needs at least 90% of its candles to be present. For pooling,
-excursions are divided by `sigma_t * sqrt(H)`, where `sigma_t` is the causal
-per-minute volatility.
-
-### Model
-**Global model with stock-specific features and stock-specific calibration.**
-
-* LightGBM quantile regression, with one booster per quantile (P10/P25/P50/P75/P90) **per side**.
-* Stock-specific inputs: volatility level, turnover level, sector, beta.
-* Quantile crossing is removed by monotone rearrangement.
-* The baseline is the empirical per-time-of-day quantiles of the same vol-scaled target. "Skill" is the pinball-loss improvement over that baseline, a deliberately non-trivial bar.
-* Other models plug in through `MODEL_REGISTRY` in `models.py`. A per-stock model can be added the same way once a stock has enough history. `use_symbol_feature` enables a symbol categorical.
-
-### Calibration
-This is joint conformalised quantile regression on a held-out calibration
-block:
-
-1. Start from each side's quantile at τ = (1+level)/2.
-2. Compute the score `s = max(y_up − Q_up, y_lo − Q_lo)`.
-3. Take the ⌈(n+1)·level⌉-th smallest score as the offset, and add it to both sides. The two sides keep different base quantiles, so asymmetry is preserved.
-
-The offset is estimated per time-of-day bucket (Mondrian). It is then
-shifted toward each stock's own calibration offset with shrinkage
-`w = n_sessions / (n_sessions + 10)`. The displayed P10–P90 quantiles get
-one-sided conformal corrections.
-
-### Validation
-* Chronological walk-forward only: an expanding train window, then embargo, calibration, embargo, and test. Folds are anchored at the most recent data.
-* Labels never cross a session close. Purging by label end time is also enforced explicitly, and whole-session embargoes separate the blocks.
-* Every test forecast is written to `data/processed/backtest_<version>.csv` with its timestamp, symbol, price, predicted low/high, actual future low/high, state labels and losses.
-* The summary reports coverage (joint and per side), width, pinball loss, skill, MAE of the median excursion, and quantile calibration. Each is broken down **by time of day, regime, volatility state and stock**.
+Fetched, failed and stale counts are reported. If fewer than 60% of
+constituents are present at the forecast minute, data quality is downgraded
+and the forecast is refused.
 
 ---
 
-## 4. Tests
+## 6. Model design (unchanged architecture)
 
-```powershell
-python -m pytest -q
+* **Target:** for every minute *t*, measured as excursions relative to the close at *t*:
+  * `upper = (max high[t+1..t+60] − close_t) / close_t`
+  * `lower = (close_t − min low[t+1..t+60]) / close_t`
+  * Windows never cross the close. The two sides are modelled separately and never symmetrised.
+* **Features:** strictly causal, verified by tests that alter or remove the future. They cover:
+  * returns (1–60 minutes)
+  * realised and EWMA volatility, range compression, ATR (as a feature only)
+  * candle structure and runs, rejection behaviour
+  * volume, including relative-to-time-of-day
+  * EMA 9/20/50, VWAP, swing structure
+  * RSI, ROC and acceleration
+  * time of day
+  * NIFTY50_PROXY and sector context
+* **Regime layer:** a multi-feature vote producing regime, volatility state, structure and relative strength.
+* **Model:** a global LightGBM model with one quantile booster per P10/P25/P50/P75/P90 **per side**. It uses stock-specific inputs and is not assumed to be calibrated.
+* **Calibration:** joint conformalised quantile calibration on a held-out block, per time-of-day bucket, with shrunk per-stock adjustments. Its guarantees are approximate, because minutes are dependent and markets are non-stationary. That is why realised coverage per state is what gates a forecast.
+* **Validation:** chronological walk-forward only, with purge by label end time and whole-session embargoes. Every out-of-sample record goes to `data\processed\backtest_<version>.csv`, with timestamp, symbol, price, predicted low/high, actual low/high, regime, time of day, volatility state and losses.
+* **Extension point (not active):** a historical-analog component or an ensemble can be added as another `QuantileModel` and combined before calibration. It would only enter production after the backtest shows it adds out-of-sample value.
+
+### Layout
+```
+engine/      config ingestion validation storage features regime targets dataset
+             models calibration pipeline walkforward evaluation confidence
+             training forecasting output cli diagnostics
+config/      engine.json  nifty50.json            (the universe lives only here)
+data/raw/<SYMBOL>/<date>.csv + _provenance.json   genuine candles
+data/raw/live/                                    archived raw endpoint responses
+data/processed/  data/calibration/  models/<version>/
+tests/       unit tests; tests/fixtures/ = synthetic generator, documented-schema example, captured/
+cipla.py tcs.py infy.py reliance.py hdfcbank.py range.py        thin wrappers: run("CIPLA")
+diagnose_endpoint.py collect.py import_history.py train.py backtest.py
 ```
 
-There are 53 tests covering every phase: parsing and malformed payloads,
-timeouts, cache TTL, duplicates, gaps, stale data, storage merges, feature
-causality, target brute-force checks, regimes, quantile models, conformal
-coverage, fold/embargo structure, end-to-end live forecasts through a mocked
-HTTP layer, every refusal path, and the CLI.
+---
 
-Tests use `tests/synthetic.py`, a synthetic market generator. **Synthetic
-results only prove the plumbing works. They say nothing about real-market
-accuracy.** The generator lives in `tests/` and cannot feed a production
-forecast.
+## 7. Known limitations
 
-## 5. Known limitations / next steps
-* There is no real history yet, so no accuracy claim can be made. Collect or import at least 32 sessions, then read the `train.py` report.
-* The NIFTY context is an equal-weight proxy of the constituents, not the official cap-weighted index. A live forecast fetches all 50 stocks (about 5 s with 8 workers; skip with `--no-context`).
-* Minute-level samples are autocorrelated, so conformal guarantees are approximate. That is why realised coverage per state is what gates the status.
-* There is no exchange holiday calendar. On a holiday the engine reports stale or `BAD_DATA` rather than forecasting.
-* `config/nifty50.json` reflects the constituents as of the date in its `as_of` field. Verify it against NSE after each rebalance.
+* **No real-data evidence yet.** Nothing here has been validated on real PSYGRID data.
+* **Parser not yet checked against the real endpoint.** It follows the documented field list and handles several timestamp formats. Confirm it with `diagnose_endpoint.py CIPLA --save-fixture` and `tests\test_real_fixture.py`.
+* **Placeholder schema fixture.** `tests\fixtures\documented_schema_CIPLA.json` was constructed by hand from the field list; it is not a real capture.
+* **Proxy, not the index.** NIFTY50_PROXY is not the official index.
+* **Slower live runs.** A live forecast queries 50 endpoints, taking a few seconds (at most 25 s).
+* **Multiple comparisons.** With 50 stocks, a few stocks will pass t ≥ 2 by chance. Treat per-stock "edge" lists as provisional until they persist across more sessions and folds.
+* **No holiday calendar.** On holidays the engine reports stale data or `BAD_DATA` rather than forecasting.
+* **Undetectable synthetic imports.** Data imported with `import_history.py` is trusted to be genuine. Provenance cannot detect synthetic data that is imported as if it were real.
+* **Universe list needs checking.** `config\nifty50.json` must be checked against NSE after each index rebalance.

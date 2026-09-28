@@ -7,6 +7,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "fixtures"))
 
 from engine.config import load_config  # noqa: E402
 from engine.storage import HistoryStore  # noqa: E402
@@ -15,6 +16,9 @@ from synthetic import generate_market  # noqa: E402
 TEST_SYMBOLS = ["CIPLA", "TCS", "INFY", "SUNPHARMA", "DRREDDY", "WIPRO", "HDFCBANK", "RELIANCE"]
 
 SMALL = {
+    # tests run on SYNTHETIC data; this switch exists only so the forecasting
+    # path can be exercised - production config keeps it False.
+    "provenance": {"allow_synthetic_model": True},
     "market_context": {"min_constituent_fraction": 0.1},
     "model": {"train_stride_minutes": 5, "params": {"n_estimators": 60, "min_data_in_leaf": 100, "num_threads": 2}},
     "walk_forward": {"min_train_sessions": 10, "calibration_sessions": 3, "test_sessions": 3, "embargo_sessions": 1},
@@ -72,7 +76,7 @@ def trained_home(tmp_path_factory, market):
     cfg = load_config(SMALL, root=root)
     store = HistoryStore(cfg)
     for s, df in market.items():
-        store.save(s, df)
+        store.save(s, df, source="synthetic")
     res = train(cfg, progress=lambda *_: None)
     assert res.status == "TRAINED", res.message
     return root, res
