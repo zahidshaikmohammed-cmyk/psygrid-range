@@ -1,0 +1,6 @@
+numpy>=1.26
+pandas>=2.1
+lightgbm>=4.0
+requests>=2.31
+tzdata>=2024.1   # IANA timezone database (required for Asia/Kolkata on Windows)
+pytest>=8.0

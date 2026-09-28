@@ -1,0 +1,208 @@
+{
+  "universe": "NIFTY50",
+  "description": "NIFTY 50 constituents. Membership changes at NSE semi-annual rebalances: verify against the official NSE list and edit this file (the only place the universe is defined).",
+  "as_of": "2025-10",
+  "index_symbol": null,
+  "constituents": [
+    {
+      "symbol": "ADANIENT",
+      "sector": "INFRA_CONGLOMERATE"
+    },
+    {
+      "symbol": "ADANIPORTS",
+      "sector": "INFRA_CONGLOMERATE"
+    },
+    {
+      "symbol": "APOLLOHOSP",
+      "sector": "HEALTHCARE"
+    },
+    {
+      "symbol": "ASIANPAINT",
+      "sector": "CONSUMER"
+    },
+    {
+      "symbol": "AXISBANK",
+      "sector": "BANK"
+    },
+    {
+      "symbol": "BAJAJ-AUTO",
+      "sector": "AUTO"
+    },
+    {
+      "symbol": "BAJFINANCE",
+      "sector": "FIN_SERVICES"
+    },
+    {
+      "symbol": "BAJAJFINSV",
+      "sector": "FIN_SERVICES"
+    },
+    {
+      "symbol": "BEL",
+      "sector": "CAPITAL_GOODS"
+    },
+    {
+      "symbol": "BHARTIARTL",
+      "sector": "TELECOM"
+    },
+    {
+      "symbol": "CIPLA",
+      "sector": "HEALTHCARE"
+    },
+    {
+      "symbol": "COALINDIA",
+      "sector": "METALS_MINING"
+    },
+    {
+      "symbol": "DRREDDY",
+      "sector": "HEALTHCARE"
+    },
+    {
+      "symbol": "EICHERMOT",
+      "sector": "AUTO"
+    },
+    {
+      "symbol": "ETERNAL",
+      "sector": "CONSUMER_SERVICES"
+    },
+    {
+      "symbol": "GRASIM",
+      "sector": "CEMENT_MATERIALS"
+    },
+    {
+      "symbol": "HCLTECH",
+      "sector": "IT"
+    },
+    {
+      "symbol": "HDFCBANK",
+      "sector": "BANK"
+    },
+    {
+      "symbol": "HDFCLIFE",
+      "sector": "FIN_SERVICES"
+    },
+    {
+      "symbol": "HINDALCO",
+      "sector": "METALS_MINING"
+    },
+    {
+      "symbol": "HINDUNILVR",
+      "sector": "FMCG"
+    },
+    {
+      "symbol": "ICICIBANK",
+      "sector": "BANK"
+    },
+    {
+      "symbol": "INDIGO",
+      "sector": "CONSUMER_SERVICES"
+    },
+    {
+      "symbol": "INFY",
+      "sector": "IT"
+    },
+    {
+      "symbol": "ITC",
+      "sector": "FMCG"
+    },
+    {
+      "symbol": "JIOFIN",
+      "sector": "FIN_SERVICES"
+    },
+    {
+      "symbol": "JSWSTEEL",
+      "sector": "METALS_MINING"
+    },
+    {
+      "symbol": "KOTAKBANK",
+      "sector": "BANK"
+    },
+    {
+      "symbol": "LT",
+      "sector": "CAPITAL_GOODS"
+    },
+    {
+      "symbol": "M&M",
+      "sector": "AUTO"
+    },
+    {
+      "symbol": "MARUTI",
+      "sector": "AUTO"
+    },
+    {
+      "symbol": "MAXHEALTH",
+      "sector": "HEALTHCARE"
+    },
+    {
+      "symbol": "NESTLEIND",
+      "sector": "FMCG"
+    },
+    {
+      "symbol": "NTPC",
+      "sector": "ENERGY"
+    },
+    {
+      "symbol": "ONGC",
+      "sector": "ENERGY"
+    },
+    {
+      "symbol": "POWERGRID",
+      "sector": "ENERGY"
+    },
+    {
+      "symbol": "RELIANCE",
+      "sector": "ENERGY"
+    },
+    {
+      "symbol": "SBILIFE",
+      "sector": "FIN_SERVICES"
+    },
+    {
+      "symbol": "SBIN",
+      "sector": "BANK"
+    },
+    {
+      "symbol": "SHRIRAMFIN",
+      "sector": "FIN_SERVICES"
+    },
+    {
+      "symbol": "SUNPHARMA",
+      "sector": "HEALTHCARE"
+    },
+    {
+      "symbol": "TATACONSUM",
+      "sector": "FMCG"
+    },
+    {
+      "symbol": "TMPV",
+      "sector": "AUTO"
+    },
+    {
+      "symbol": "TATASTEEL",
+      "sector": "METALS_MINING"
+    },
+    {
+      "symbol": "TCS",
+      "sector": "IT"
+    },
+    {
+      "symbol": "TECHM",
+      "sector": "IT"
+    },
+    {
+      "symbol": "TITAN",
+      "sector": "CONSUMER"
+    },
+    {
+      "symbol": "TRENT",
+      "sector": "CONSUMER"
+    },
+    {
+      "symbol": "ULTRACEMCO",
+      "sector": "CEMENT_MATERIALS"
+    },
+    {
+      "symbol": "WIPRO",
+      "sector": "IT"
+    }
+  ]
+}
