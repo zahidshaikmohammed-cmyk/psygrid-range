@@ -264,7 +264,7 @@ The JSON output (`--json`) contains:
   * `status`, `symbol` and `candles_1m` are required. A wrong status or symbol mismatch is rejected.
   * Missing documented fields (`service`, `schema_version`, `security_id`, `previous_close`, `today_open`) or non-numeric prices are flagged, and quality becomes DEGRADED.
 * **Candles:**
-  * **Timestamps:** epoch seconds or milliseconds, or ISO with/without an offset. The detected format is reported. Naive times are treated as IST, and everything is converted to `Asia/Kolkata`.
+  * **Timestamps:** epoch seconds or milliseconds, ISO with/without an offset, or with an explicitly mapped timezone abbreviation. The live endpoint sends `"2026-09-29 09:15:00 IST"`, and `IST` is mapped to `Asia/Kolkata` in `data_source.timestamp_tz_abbreviations`; unmapped abbreviations are rejected, never guessed. The detected format is reported. Naive times are treated as IST, and everything is converted to `Asia/Kolkata`.
   * **Duplicates:** identical ones are collapsed. Conflicting ones are flagged, and the latest record is kept.
   * **Dropped and flagged, never repaired:** impossible OHLC (high < max(open, close), low > min(open, close), high < low), negative volume, non-positive prices, candles outside the session, and candles stamped in the future.
   * **Forming candle:** a candle still in progress is discarded.

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time as _time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -28,6 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -38,6 +40,12 @@ from .config import EngineConfig
 CANDLE_FIELDS = ("timestamp", "open", "high", "low", "close", "volume")
 OK_STATUSES = ("ok", "success", "live", "open", "200", "true")
 CLOSED_STATUSES = ("closed", "market_closed", "holiday")
+
+# Trailing timezone abbreviations accepted on timestamps.  Abbreviations are
+# ambiguous in general ("IST" is also Irish/Israel time), so only explicitly
+# mapped ones are accepted; anything else makes the record malformed.
+DEFAULT_TZ_ABBREVIATIONS = {"IST": "Asia/Kolkata"}
+_ABBR_RE = re.compile(r"^(?P<body>.*\d)\s+(?P<abbr>[A-Za-z]{2,5})$")
 
 # Endpoint states derived from the envelope's ``status`` field
 ENDPOINT_OK, ENDPOINT_CLOSED = "OK", "CLOSED"
@@ -111,6 +119,9 @@ def classify_timestamp(value: Any) -> str:
         return "epoch_milliseconds" if x > 1e11 else "epoch_seconds"
     if isinstance(value, str):
         v = value.strip()
+        m = _ABBR_RE.match(v)
+        if m:
+            return f"iso8601_with_tz_abbreviation({m.group('abbr').upper()})"
         if v.endswith("Z") or v.endswith("z"):
             return "iso8601_utc"
         tail = v[10:]
@@ -120,15 +131,19 @@ def classify_timestamp(value: Any) -> str:
     return "invalid"
 
 
-def parse_timestamp(value: Any, tz) -> pd.Timestamp | None:
+def parse_timestamp(value: Any, tz, abbreviations: dict[str, str] | None = None) -> pd.Timestamp | None:
     """Parse one candle timestamp into a tz-aware IST ``Timestamp``.
 
     Accepts epoch seconds, epoch milliseconds (numbers or numeric strings) and
-    ISO-8601-like strings.  Naive strings are interpreted as IST, which is the
-    exchange's timezone.  Returns ``None`` when the value is unusable.
+    ISO-8601-like strings, optionally followed by an explicitly mapped timezone
+    abbreviation (PSYGRID sends e.g. ``"2026-09-29 09:15:00 IST"``).  Naive
+    strings are interpreted as IST, which is the exchange's timezone.
+    Returns ``None`` when the value is unusable (including unknown
+    abbreviations, which are never guessed).
     """
     if value is None or isinstance(value, bool):
         return None
+    abbreviations = DEFAULT_TZ_ABBREVIATIONS if abbreviations is None else abbreviations
     try:
         if isinstance(value, (int, float, np.integer, np.floating)) or (
             isinstance(value, str) and value.strip().lstrip("-").replace(".", "", 1).isdigit()
@@ -145,6 +160,15 @@ def parse_timestamp(value: Any, tz) -> pd.Timestamp | None:
         if isinstance(value, str):
             if len(value) > 64:
                 return None
+            m = _ABBR_RE.match(value.strip())
+            if m:
+                zone = {k.upper(): v for k, v in abbreviations.items()}.get(m.group("abbr").upper())
+                if zone is None:
+                    return None
+                ts = pd.Timestamp(m.group("body").strip())
+                if ts is pd.NaT or ts.tzinfo is not None:
+                    return None
+                return ts.tz_localize(ZoneInfo(zone)).tz_convert(tz)
             ts = pd.Timestamp(value.strip())
             if ts is pd.NaT:
                 return None
@@ -166,18 +190,18 @@ def _to_float(v: Any) -> float | None:
     return x if math.isfinite(x) else None
 
 
-def parse_candles(records: Any, tz) -> tuple[pd.DataFrame, int, list[str]]:
+def parse_candles(records: Any, tz, abbreviations: dict[str, str] | None = None) -> tuple[pd.DataFrame, int, list[str]]:
     """Parse ``candles_1m``.  Supports a list of objects
     (``{"timestamp":..,"open":..}``) or a list of arrays
     (``[timestamp, open, high, low, close, volume]``).
 
     Returns (frame, n_malformed, examples_of_malformed).
     """
-    frame, bad, examples, _ = _parse_candles(records, tz)
+    frame, bad, examples, _ = _parse_candles(records, tz, abbreviations)
     return frame, bad, examples
 
 
-def _parse_candles(records: Any, tz) -> tuple[pd.DataFrame, int, list[str], str]:
+def _parse_candles(records: Any, tz, abbreviations: dict[str, str] | None = None) -> tuple[pd.DataFrame, int, list[str], str]:
     if not isinstance(records, list):
         raise MalformedPayloadError("candles_1m is not a list")
     rows: list[tuple] = []
@@ -204,7 +228,7 @@ def _parse_candles(records: Any, tz) -> tuple[pd.DataFrame, int, list[str], str]
                 examples.append(repr(rec)[:120])
             continue
         formats[classify_timestamp(vals[0])] += 1
-        ts = parse_timestamp(vals[0], tz)
+        ts = parse_timestamp(vals[0], tz, abbreviations)
         nums = [_to_float(v) for v in vals[1:]]
         if ts is None or any(n is None for n in nums):
             bad += 1
@@ -292,7 +316,8 @@ def parse_payload(payload: Any, symbol: str, cfg: EngineConfig, fetched_at: date
             issues.append(f"{k} is not a finite number: {str(payload.get(k))[:40]!r}")
         elif _to_float(payload.get(k)) is not None and _to_float(payload.get(k)) <= 0:
             issues.append(f"{k} is not positive")
-    candles, bad, examples, fmt = _parse_candles(raw_candles if raw_candles is not None else [], cfg.tz)
+    candles, bad, examples, fmt = _parse_candles(raw_candles if raw_candles is not None else [], cfg.tz,
+                                                 ds.get("timestamp_tz_abbreviations", DEFAULT_TZ_ABBREVIATIONS))
     return Snapshot(
         symbol=symbol.upper(),
         candles=candles,

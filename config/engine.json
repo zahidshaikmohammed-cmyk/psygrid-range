@@ -50,7 +50,10 @@
       "preopen",
       "pre_market",
       "premarket"
-    ]
+    ],
+    "timestamp_tz_abbreviations": {
+      "IST": "Asia/Kolkata"
+    }
   },
   "session": {
     "timezone": "Asia/Kolkata",

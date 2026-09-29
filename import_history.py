@@ -32,7 +32,8 @@ def import_file(path: Path, symbol: str, cfg, store) -> str:
     missing = [c for c in need if c not in df.columns]
     if missing:
         return f"{symbol}: missing columns {missing}"
-    frame, bad, _ = parse_candles(df[need].values.tolist(), cfg.tz)
+    frame, bad, _ = parse_candles(df[need].values.tolist(), cfg.tz,
+                                  cfg["data_source"].get("timestamp_tz_abbreviations"))
     clean, rep = clean_candles(frame, cfg, symbol, n_malformed=bad)
     touched = store.save(symbol, clean, source=f"import:{path.name}")
     return (f"{symbol}: {rep.n_valid} candles in {len(touched)} sessions, quality {rep.quality}"

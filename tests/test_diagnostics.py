@@ -42,3 +42,10 @@ def test_diagnostic_failure_fabricates_nothing(cfg):
 def test_diagnostic_malformed(cfg):
     d = run_diagnostic("CIPLA", cfg, http=FakeHTTP({"CIPLA": {"status": "error", "symbol": "CIPLA", "candles_1m": []}}))
     assert d["verdict"] == "BAD_DATA" and "status" in d["errors"][0]
+
+
+def test_diagnostic_on_real_ist_format(cfg):
+    doc = json.loads((Path(__file__).parent / "fixtures" / "transcribed_CIPLA_20260929.json").read_text())
+    d = run_diagnostic("CIPLA", cfg, http=FakeHTTP({"CIPLA": doc}), now=ist("2026-09-29 09:18:05").to_pydatetime())
+    assert d["verdict"] == "OK" and d["candles"] == 3 and d["malformed_records"] == 0
+    assert d["timestamp_format"] == "iso8601_with_tz_abbreviation(IST)" and d["latest_close"] == 1398.2

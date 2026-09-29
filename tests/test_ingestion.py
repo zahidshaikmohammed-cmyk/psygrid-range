@@ -247,3 +247,29 @@ def test_get_snapshot_archives_raw_response(cfg):
                         http=FakeHTTP({"CIPLA": _doc()}), use_cache=False)
     assert snap.raw_path and Path(snap.raw_path).exists()
     assert snap.fetch.http_status == 200
+
+
+# ---------------------------------------------------------------------------
+# Real timestamp format seen on the live endpoint: "2026-09-29 09:15:00 IST"
+# ---------------------------------------------------------------------------
+def test_real_ist_suffixed_timestamps_parse(cfg):
+    doc = json.loads((FIXTURES / "transcribed_CIPLA_20260929.json").read_text())
+    snap = parse_payload(doc, "CIPLA", cfg, datetime.now(cfg.tz))
+    assert snap.n_malformed == 0 and len(snap.candles) == 3
+    assert snap.timestamp_format == "iso8601_with_tz_abbreviation(IST)"
+    assert snap.endpoint_state == "OK" and snap.has_candles
+    assert list(snap.candles["timestamp"]) == [ist("2026-09-29 09:15"), ist("2026-09-29 09:16"), ist("2026-09-29 09:17")]
+    assert snap.candles["close"].tolist() == [1390.1, 1392.4, 1398.2]
+    clean, rep = clean_candles(snap.candles, cfg, "CIPLA", schema_issues=snap.schema_issues, single_session=True,
+                               now=ist("2026-09-29 09:18:05").to_pydatetime())
+    assert rep.quality == "GOOD" and rep.n_ohlc_violations == 0 and len(clean) == 3
+
+
+def test_timezone_abbreviations_are_explicit_never_guessed(cfg):
+    tz = cfg.tz
+    assert parse_timestamp("2026-09-29 09:15:00 IST", tz) == ist("2026-09-29 09:15")
+    assert parse_timestamp("2026-09-29 09:15:00 ist", tz) == ist("2026-09-29 09:15")
+    assert parse_timestamp("2026-09-29 09:15:00 EST", tz) is None       # not mapped -> malformed
+    assert parse_timestamp("2026-09-29 09:15:00+05:30 IST", tz) is None  # offset AND abbreviation -> ambiguous
+    assert parse_timestamp("2026-09-29 09:15:00 IST", tz, {}) is None   # mapping can be disabled
+    assert classify_timestamp("2026-09-29 09:15:00 IST") == "iso8601_with_tz_abbreviation(IST)"
